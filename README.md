@@ -32,7 +32,7 @@ The project also focuses on implementing the end-to-end **MLOps workflow**, cove
 | LLM and RAG | Gemini API / OpenAI API, LlamaIndex, Qdrant |
 | Version Control | Git, GitHub |
 | Testing | PyTest |
-| Containerization | Docker |
+| Containerization | Docker/Podman |
 | CI/CD | GitHub Actions |
 | Drift Detection | Evidently |
 | Metrics and Monitoring | Prometheus, Grafana |
