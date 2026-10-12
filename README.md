@@ -96,19 +96,24 @@ Data Version Control (DVC) is used to track and version large dataset files with
   dvc checkout
   ```
 
-### Current Limitations and Next Steps
-
-- **No Remote Storage Configured:** Currently, datasets are cached locally in the `.dvc/cache` directory. No remote storage (e.g. AWS S3, Google Drive, DAGsHub, Azure Blob) has been configured yet.
-- **What remains necessary:** To share data with teammates or across machines, an authorized remote storage destination must be configured:
+- Push tracked data to remote storage:
   ```bash
-  # Example (configure once authorized):
-  dvc remote add -d <remote_name> <remote_url>
   dvc push
   ```
+- Pull tracked data from remote storage:
+  ```bash
+  dvc pull
+  ```
+
+### Remote Storage (DAGsHub)
+
+- **Remote Endpoint:** Configured to DAGsHub DVC storage at `https://dagshub.com/suhaybfr/ML-ops.dvc` (default remote: `origin`).
+- **Data Synchronization:** The raw dataset is backed up to DAGsHub via `dvc push`. Any collaborator can clone the repository and run `dvc pull` to obtain the exact raw data version.
+- **Security:** Remote credentials are kept in `.dvc/config.local` (ignored by Git) to prevent leaking access tokens.
 
 ## Current Status
 
-DVC data versioning is set up and verified. The ASSISTments Skill Builder raw dataset is properly placed in `data/raw/` and version-controlled via DVC metadata (`skill_builder_data.csv.dvc`), with the raw data file excluded from Git tracking.
+DVC data versioning is set up, verified, and linked to DAGsHub remote storage. The ASSISTments Skill Builder raw dataset is properly stored in `data/raw/` and version-controlled via DVC metadata (`skill_builder_data.csv.dvc`), with the raw data file excluded from Git and safely synced to DAGsHub.
 
 ## Project Goal
 
