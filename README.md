@@ -53,22 +53,62 @@ The project also focuses on implementing the end-to-end **MLOps workflow**, cove
 ## Project Structure
 
 ```text
-ai-learning-assistant/
+ML-ops/
+├── .dvc/                               # DVC configuration and internal metadata
+├── .dvcignore                          # Patterns ignored by DVC
 ├── data/
+│   ├── raw/
+│   │   ├── .gitignore                  # Excludes raw data file from Git tracking
+│   │   ├── skill_builder_data.csv.dvc  # DVC pointer/metadata for raw dataset
+│   │   └── skill_builder_data.csv      # Local raw dataset (tracked by DVC, ignored by Git)
+│   └── processed/
 ├── notebooks/
 ├── src/
 ├── models/
 ├── reports/
 ├── tests/
-├── requirements.txt
+├── CHANGELOG.md
 └── README.md
 ```
 
-The project structure will evolve as the implementation progresses.
+## Data Versioning with DVC
+
+Data Version Control (DVC) is used to track and version large dataset files without storing large binaries directly in Git.
+
+- **How it works:**
+  - The dataset file (`skill_builder_data.csv`) is placed in `data/raw/`.
+  - DVC calculates its content checksum and stores the metadata in `data/raw/skill_builder_data.csv.dvc`.
+  - Git tracks the small `.dvc` pointer file and `data/raw/.gitignore`, while the large raw CSV is ignored by Git and managed by DVC.
+
+### Common DVC Commands
+
+- Check status of tracked datasets:
+  ```bash
+  dvc status
+  ```
+- Track a new or modified dataset:
+  ```bash
+  dvc add data/raw/skill_builder_data.csv
+  git add data/raw/skill_builder_data.csv.dvc data/raw/.gitignore
+  ```
+- Retrieve/restore tracked data matching the current Git commit:
+  ```bash
+  dvc checkout
+  ```
+
+### Current Limitations and Next Steps
+
+- **No Remote Storage Configured:** Currently, datasets are cached locally in the `.dvc/cache` directory. No remote storage (e.g. AWS S3, Google Drive, DAGsHub, Azure Blob) has been configured yet.
+- **What remains necessary:** To share data with teammates or across machines, an authorized remote storage destination must be configured:
+  ```bash
+  # Example (configure once authorized):
+  dvc remote add -d <remote_name> <remote_url>
+  dvc push
+  ```
 
 ## Current Status
 
-The project is in its initial development phase. Work begins with dataset exploration, feature engineering, and baseline model development before progressing to deployment, monitoring, and the complete MLOps pipeline.
+DVC data versioning is set up and verified. The ASSISTments Skill Builder raw dataset is properly placed in `data/raw/` and version-controlled via DVC metadata (`skill_builder_data.csv.dvc`), with the raw data file excluded from Git tracking.
 
 ## Project Goal
 
