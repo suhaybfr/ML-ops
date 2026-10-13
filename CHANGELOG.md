@@ -23,6 +23,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 - Updated `README.md` with pipeline execution instructions, MLflow experiment links, and updated project structure.
-- Relocated original dataset `skill_builder_data.csv` from repository root to `data/raw/skill_builder_data.csv`, verifying MD5 checksum preservation (`9410c31fadc7ad6518d296ce254ec4ab`).
+- Relocated original dataset `skill_builder_data.csv` from repository root to `data/raw/skill_builder_data.csv`.
 - Removed `skill_builder_data.csv` from Git tracking in the root folder.
 - Removed obsolete placeholders across project directories.
