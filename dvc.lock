@@ -1,0 +1,57 @@
+schema: '2.0'
+stages:
+  prepare:
+    cmd: python src/prepare.py
+    deps:
+    - path: data/raw/skill_builder_data.csv
+      hash: md5
+      md5: 9410c31fadc7ad6518d296ce254ec4ab
+      size: 83201940
+    - path: src/prepare.py
+      hash: md5
+      md5: cf1fee52eb90dd3dbf25c217219910eb
+      size: 2261
+    params:
+      params.yaml:
+        prepare.random_state: 42
+        prepare.sample_size: 100000
+        prepare.test_size: 0.2
+    outs:
+    - path: data/processed/test.csv
+      hash: md5
+      md5: 399574553f840af9ca7660b37f2beac7
+      size: 465279
+    - path: data/processed/train.csv
+      hash: md5
+      md5: 7c38df070c23e65c0e8840ba7cc385b1
+      size: 1858968
+  train:
+    cmd: python src/train.py
+    deps:
+    - path: data/processed/test.csv
+      hash: md5
+      md5: 399574553f840af9ca7660b37f2beac7
+      size: 465279
+    - path: data/processed/train.csv
+      hash: md5
+      md5: 7c38df070c23e65c0e8840ba7cc385b1
+      size: 1858968
+    - path: src/train.py
+      hash: md5
+      md5: f0dc36eaa608f71e3108363068052769
+      size: 3464
+    - path: src/utils.py
+      hash: md5
+      md5: a4af8f5e82d00fde5f0d699b3877bbbf
+      size: 1732
+    params:
+      params.yaml:
+        train.max_depth: 10
+        train.model_type: RandomForest
+        train.n_estimators: 100
+        train.random_state: 42
+    outs:
+    - path: models/baseline_model.pkl
+      hash: md5
+      md5: 70923a8bdcaaed47ef435553b4f65efb
+      size: 2991369

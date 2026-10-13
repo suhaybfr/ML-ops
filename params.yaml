@@ -1,0 +1,10 @@
+prepare:
+  test_size: 0.2
+  random_state: 42
+  sample_size: 100000
+
+train:
+  model_type: "RandomForest"
+  n_estimators: 100
+  max_depth: 10
+  random_state: 42

@@ -61,15 +61,41 @@ ML-ops/
 │   │   ├── .gitignore                  # Excludes raw data file from Git tracking
 │   │   ├── skill_builder_data.csv.dvc  # DVC pointer/metadata for raw dataset
 │   │   └── skill_builder_data.csv      # Local raw dataset (tracked by DVC, ignored by Git)
-│   └── processed/
+│   └── processed/                      # Preprocessed train/test datasets (tracked by DVC)
+├── models/                             # Trained model artifacts (tracked by DVC)
 ├── notebooks/
 ├── src/
-├── models/
+│   ├── prepare.py                      # Data preprocessing & train/test split stage
+│   ├── train.py                        # Baseline model training & evaluation stage
+│   └── utils.py                        # MLflow DAGsHub configuration utility
 ├── reports/
 ├── tests/
+├── params.yaml                         # Pipeline parameters and hyperparameters
+├── dvc.yaml                            # DVC reproducible pipeline stages
+├── dvc.lock                            # DVC pipeline dependency & output lock
 ├── CHANGELOG.md
 └── README.md
 ```
+
+## Reproducible Pipeline (DVC)
+
+The project uses DVC pipelines to chain data preprocessing and model training into an automated, version-controlled workflow.
+
+### Pipeline Stages
+1. **Prepare (`src/prepare.py`):** Loads raw data, filters invalid targets, performs median imputation, and generates stratified `data/processed/train.csv` and `data/processed/test.csv`.
+2. **Train (`src/train.py`):** Trains a baseline Random Forest classifier, evaluates accuracy, precision, recall, F1, and ROC-AUC, logs run metadata to DAGsHub MLflow, and saves the model artifact to `models/baseline_model.pkl`.
+
+### Running the Pipeline
+To reproduce the entire pipeline (or only stages whose code/params have changed):
+```bash
+dvc repro
+```
+
+## Experiment Tracking (MLflow + DAGsHub)
+
+All model experiments, hyperparameters, and evaluation metrics are automatically logged to the hosted DAGsHub MLflow server:
+- **MLflow Tracking URI:** `https://dagshub.com/suhaybfr/ML-ops.mlflow`
+- **Dashboard:** Navigate to the **Experiments** tab on [DAGsHub](https://dagshub.com/suhaybfr/ML-ops/experiments) to compare runs, view metric curves, and inspect logged model artifacts.
 
 ## Data Versioning with DVC
 
@@ -95,7 +121,6 @@ Data Version Control (DVC) is used to track and version large dataset files with
   ```bash
   dvc checkout
   ```
-
 - Push tracked data to remote storage:
   ```bash
   dvc push
@@ -108,12 +133,12 @@ Data Version Control (DVC) is used to track and version large dataset files with
 ### Remote Storage (DAGsHub)
 
 - **Remote Endpoint:** Configured to DAGsHub DVC storage at `https://dagshub.com/suhaybfr/ML-ops.dvc` (default remote: `origin`).
-- **Data Synchronization:** The raw dataset is backed up to DAGsHub via `dvc push`. Any collaborator can clone the repository and run `dvc pull` to obtain the exact raw data version.
+- **Data Synchronization:** The raw and processed datasets and model artifacts are backed up to DAGsHub via `dvc push`. Any collaborator can clone the repository and run `dvc pull` to obtain the exact data and model versions.
 - **Security:** Remote credentials are kept in `.dvc/config.local` (ignored by Git) to prevent leaking access tokens.
 
 ## Current Status
 
-DVC data versioning is set up, verified, and linked to DAGsHub remote storage. The ASSISTments Skill Builder raw dataset is properly stored in `data/raw/` and version-controlled via DVC metadata (`skill_builder_data.csv.dvc`), with the raw data file excluded from Git and safely synced to DAGsHub.
+DVC data versioning, the automated reproducible pipeline (`dvc.yaml`), and MLflow experiment tracking on DAGsHub are fully established and verified. A Random Forest baseline model has been trained and evaluated (~94% test accuracy, 0.98 ROC-AUC) with all parameters, metrics, and artifacts logged to DAGsHub.
 
 ## Project Goal
 
