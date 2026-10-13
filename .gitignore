@@ -12,3 +12,6 @@ env/
 # Local configurations & secrets
 .env
 .dvc/config.local
+
+# scratch notebooks
+notebooks/Clean_FeatEngg.ipynb
