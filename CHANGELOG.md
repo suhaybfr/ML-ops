@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+
 
 ### Added
 - **SVM Model:** Added an RBF-kernel SVM stage (`src/train_svm.py`) that trains on scaled features, saves `models/svm_model.pkl` and logs metrics and figures to MLflow.
