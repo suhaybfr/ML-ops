@@ -94,14 +94,15 @@ Random Forest Model (models/baseline_model.pkl) ──[DVC Tracked]
 
 ---
 
-## 6. Next Steps for Team Members
+## 6. Next Steps
 
-The core MLOps plumbing and baseline benchmark are established. Remaining modules for teammates:
-1. **Exploratory Data Analysis (EDA) & Advanced Feature Engineering:**
-   - Feature additions: student historical accuracy, skill difficulty indices, rolling error rates.
-2. **Model Optimization:**
-   - Benchmark XGBoost and LightGBM models against this Random Forest baseline.
-   - Hyperparameter tuning via Optuna.
-3. **Deployment & Serving:**
-   - Build FastAPI inference endpoints (`src/api.py`).
-   - Containerize services with Docker.
+The core MLOps plumbing and baseline benchmark are established. The model work
+(EDA, feature engineering, baseline and SVM models, evaluation and experiment
+tracking) is complete and documented in `reports/model_validation_report.md` and
+`docs/MODEL_VALIDATION.md`.
+
+The remaining system modules are handled separately by teammates:
+1. **Deployment & Serving:** build FastAPI inference endpoints (`src/api.py`) and
+   containerize services with Docker.
+2. **LLM Tutor (RAG):** connect the predictive model to the conversational tutor.
+3. **Monitoring & Feedback Loop:** drift detection and retraining triggers.

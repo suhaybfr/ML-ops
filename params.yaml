@@ -8,3 +8,24 @@ train:
   n_estimators: 100
   max_depth: 10
   random_state: 42
+
+# Kernel SVM added after the Random Forest baseline (teacher-requested model).
+# The processed train split is subsampled because kernel SVM cost grows
+# quadratically with the number of training rows.
+svm:
+  kernel: "rbf"
+  C: 1.0
+  gamma: "scale"
+  sample_size: 30000
+  random_state: 42
+
+# Split-robustness study: the same models are trained on several train/test
+# ratios so results are not tied to a single partition.
+experiments:
+  random_state: 42
+  sample_size: 30000
+  test_sizes:
+    - 0.2
+    - 0.3
+    - 0.4
+  cv_folds: 5

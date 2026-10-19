@@ -15,3 +15,6 @@ env/
 
 # scratch notebooks
 notebooks/Clean_FeatEngg.ipynb
+
+# Jupyter notebook checkpoints
+.ipynb_checkpoints/

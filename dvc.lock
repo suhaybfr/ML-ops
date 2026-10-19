@@ -55,3 +55,79 @@ stages:
       hash: md5
       md5: 70923a8bdcaaed47ef435553b4f65efb
       size: 2991369
+  train_svm:
+    cmd: python src/train_svm.py
+    deps:
+    - path: data/processed/test.csv
+      hash: md5
+      md5: 399574553f840af9ca7660b37f2beac7
+      size: 465279
+    - path: data/processed/train.csv
+      hash: md5
+      md5: 7c38df070c23e65c0e8840ba7cc385b1
+      size: 1858968
+    - path: src/evaluation.py
+      hash: md5
+      md5: 57922c134c487aee20754965d2c9573f
+      size: 2653
+    - path: src/train_svm.py
+      hash: md5
+      md5: dfdd9b913964a591b01d3ab4cec8d1a3
+      size: 4524
+    - path: src/utils.py
+      hash: md5
+      md5: a4af8f5e82d00fde5f0d699b3877bbbf
+      size: 1732
+    params:
+      params.yaml:
+        svm.C: 1.0
+        svm.gamma: scale
+        svm.kernel: rbf
+        svm.random_state: 42
+        svm.sample_size: 30000
+    outs:
+    - path: models/svm_model.pkl
+      hash: md5
+      md5: 65cf6bd5b126d1dd78753b59ab33d2f5
+      size: 619117
+  experiments:
+    cmd: python src/experiments.py
+    deps:
+    - path: data/processed/test.csv
+      hash: md5
+      md5: 399574553f840af9ca7660b37f2beac7
+      size: 465279
+    - path: data/processed/train.csv
+      hash: md5
+      md5: 7c38df070c23e65c0e8840ba7cc385b1
+      size: 1858968
+    - path: src/evaluation.py
+      hash: md5
+      md5: 57922c134c487aee20754965d2c9573f
+      size: 2653
+    - path: src/experiments.py
+      hash: md5
+      md5: 5e1cc5d5ca5662326f4abaa0920b1f8f
+      size: 9767
+    - path: src/utils.py
+      hash: md5
+      md5: a4af8f5e82d00fde5f0d699b3877bbbf
+      size: 1732
+    params:
+      params.yaml:
+        experiments.cv_folds: 5
+        experiments.random_state: 42
+        experiments.sample_size: 30000
+        experiments.test_sizes:
+        - 0.2
+        - 0.3
+        - 0.4
+    outs:
+    - path: reports/cv_results.csv
+      hash: md5
+      md5: b3e97fd333b56a4227f714145157506b
+      size: 1204
+    - path: reports/experiment_results.csv
+      hash: md5
+      md5: cdcce5ebc95fd1232525cf057442964c
+      size: 1685

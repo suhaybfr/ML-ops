@@ -26,3 +26,37 @@ stages:
       - train.random_state
     outs:
       - models/baseline_model.pkl
+
+  train_svm:
+    cmd: python src/train_svm.py
+    deps:
+      - data/processed/train.csv
+      - data/processed/test.csv
+      - src/train_svm.py
+      - src/utils.py
+      - src/evaluation.py
+    params:
+      - svm.kernel
+      - svm.C
+      - svm.gamma
+      - svm.sample_size
+      - svm.random_state
+    outs:
+      - models/svm_model.pkl
+
+  experiments:
+    cmd: python src/experiments.py
+    deps:
+      - data/processed/train.csv
+      - data/processed/test.csv
+      - src/experiments.py
+      - src/utils.py
+      - src/evaluation.py
+    params:
+      - experiments.random_state
+      - experiments.sample_size
+      - experiments.test_sizes
+      - experiments.cv_folds
+    outs:
+      - reports/experiment_results.csv
+      - reports/cv_results.csv
