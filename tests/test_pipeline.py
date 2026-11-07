@@ -212,8 +212,9 @@ class TestModelArtifacts:
 class TestFastAPIEndpoints:
     """Smoke tests for the FastAPI prediction service."""
 
+    @classmethod
     @pytest.fixture(scope="class")
-    def client(self):
+    def client(cls):
         """Create a TestClient for the FastAPI app."""
         try:
             from fastapi.testclient import TestClient
@@ -236,8 +237,21 @@ class TestFastAPIEndpoints:
         data = response.json()
         assert data.get("status") == "ok"
 
-    def test_predict_endpoint_valid(self, client):
-        """POST /predict with valid features returns a prediction."""
+    def test_predict_endpoint_valid(self, client, monkeypatch):
+        """POST /predict with valid features returns a prediction (mocking model if not on disk)."""
+        import main
+
+        class DummyModel:
+            def predict(self, X):
+                return np.array([1])
+
+            def decision_function(self, X):
+                return np.array([0.75])
+
+        # If model is not on disk yet (e.g. before dvc pull in CI), mock it for unit smoke test
+        if not os.path.exists(main.MODEL_PATH):
+            monkeypatch.setattr(main, "get_model", lambda: DummyModel())
+
         payload = {
             "skill_id": 5,
             "attempt_count": 2,
