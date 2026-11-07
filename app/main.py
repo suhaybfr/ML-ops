@@ -282,6 +282,52 @@ def model_info():
     }
 
 
+def _build_model_input_df(instances_list: list[dict], model) -> pd.DataFrame:
+    """Prepare feature DataFrame matching the trained model's feature contract."""
+    model_features = None
+    if hasattr(model, "feature_names_in_") and model.feature_names_in_ is not None:
+        model_features = list(model.feature_names_in_)
+    elif hasattr(model, "steps"):
+        for _, step in model.steps:
+            if hasattr(step, "feature_names_in_") and step.feature_names_in_ is not None:
+                model_features = list(step.feature_names_in_)
+                break
+
+    if model_features is None or len(model_features) == 0:
+        cols = [c for c in FEATURE_COLS if all(c in d for d in instances_list)]
+        if not cols:
+            cols = list(instances_list[0].keys())
+        return pd.DataFrame(instances_list)[cols]
+
+    rows = []
+    for d in instances_list:
+        att = float(d.get("attempt_count", 1))
+        ms = float(d.get("ms_first_response", 5000))
+        hints = float(d.get("hint_count", 0))
+
+        row_dict = {
+            "log_opportunity": float(d.get("log_opportunity", np.log1p(att))),
+            "attempt_count": att,
+            "hint_count": hints,
+            "bottom_hint": float(d.get("bottom_hint", 1.0 if hints >= 3 else 0.0)),
+            "hint_ratio": float(d.get("hint_ratio", hints / (att + hints) if (att + hints) > 0 else 0.0)),
+            "user_prev_acc": float(d.get("user_prev_acc", 0.70)),
+            "problem_difficulty": float(d.get("problem_difficulty", 0.65)),
+            "skill_difficulty": float(d.get("skill_difficulty", 0.65)),
+            "is_skill_unmapped": float(d.get("is_skill_unmapped", 0.0)),
+            "log_response_time": float(d.get("log_response_time", np.log1p(ms / 1000.0))),
+            "is_rapid_guess": float(d.get("is_rapid_guess", 1.0 if ms < 3000 else 0.0)),
+        }
+        for feat in model_features:
+            if feat in d:
+                row_dict[feat] = float(d[feat])
+            elif feat not in row_dict:
+                row_dict[feat] = 0.0
+        rows.append(row_dict)
+
+    return pd.DataFrame(rows)[list(model_features)]
+
+
 @app.post("/predict", response_model=PredictionResponse, tags=["Prediction"])
 def predict(features: StudentFeatures):
     """
@@ -300,7 +346,7 @@ def predict(features: StudentFeatures):
             REQUEST_ERRORS.labels(endpoint="/predict", error_type="model_unavailable").inc()
         raise HTTPException(status_code=503, detail=str(exc))
 
-    row = pd.DataFrame([features.model_dump()])[FEATURE_COLS]
+    row = _build_model_input_df([features.model_dump()], model)
 
     prediction = int(model.predict(row)[0])
 
@@ -351,7 +397,7 @@ def predict_batch(request: BatchPredictionRequest):
             REQUEST_ERRORS.labels(endpoint="/predict/batch", error_type="model_unavailable").inc()
         raise HTTPException(status_code=503, detail=str(exc))
 
-    rows = pd.DataFrame([inst.model_dump() for inst in request.instances])[FEATURE_COLS]
+    rows = _build_model_input_df([inst.model_dump() for inst in request.instances], model)
     predictions = model.predict(rows).tolist()
 
     if hasattr(model, "decision_function"):

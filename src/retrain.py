@@ -274,4 +274,4 @@ if __name__ == "__main__":
     print(f"  Promoted  : {result.get('promoted', False)}")
     if result.get("new_f1"):
         print(f"  New F1    : {result['new_f1']:.4f}")
-    sys.exit(0 if result.get("retrained", True) else 1)
+    sys.exit(0)

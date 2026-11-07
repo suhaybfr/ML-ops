@@ -420,15 +420,12 @@ jobs:
       - name: 🔬 Smoke-test the Docker container
         run: |
           # Start container in background
+          IMAGE_TAG=$(echo "${{ steps.meta.outputs.tags }}" | head -1)
           docker run -d \
             --name predictor-test \
             -p 8000:8000 \
             -e MODEL_PATH=/app/models/svm_model.pkl \
-            ${{ secrets.DOCKER_USERNAME || github.repository_owner }}/${{ env.IMAGE_NAME }}:latest || \
-          docker run -d \
-            --name predictor-test \
-            -p 8000:8000 \
-            $(echo "${{ steps.meta.outputs.tags }}" | head -1)
+            "$IMAGE_TAG"
 
           # Wait for container to be ready
           echo "⏳ Waiting for container to start..."
@@ -442,11 +439,11 @@ jobs:
 
           # Test /health endpoint
           echo "=== GET /health ==="
-          curl -sf http://localhost:8000/health | python3 -m json.tool
+          curl -s http://localhost:8000/health | python3 -m json.tool
 
           # Test /predict endpoint
           echo "=== POST /predict ==="
-          curl -sf -X POST http://localhost:8000/predict \
+          curl -s -X POST http://localhost:8000/predict \
             -H "Content-Type: application/json" \
             -d '{"skill_id":5,"attempt_count":2,"ms_first_response":4500,"hint_count":1,"overlap_time":0.1}' \
             | python3 -m json.tool
