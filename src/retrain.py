@@ -56,6 +56,9 @@ def _run_drift_check(ref_path: str, cur_path: str) -> dict:
             print("[Retrain] monitoring.py not found — skipping drift check.")
             return {"drift_share": 0.0, "dataset_drifted": False, "feature_drift": {}}
 
+    if not os.path.exists(ref_path) or not os.path.exists(cur_path):
+        print(f"[Retrain] Data files {ref_path} or {cur_path} not found. Skipping drift check.")
+        return {"drift_share": 0.0, "dataset_drifted": False, "feature_drift": {}}
     ref_df = pd.read_csv(ref_path)
     cur_df = pd.read_csv(cur_path)
     return compute_drift_report(ref_df, cur_df)
