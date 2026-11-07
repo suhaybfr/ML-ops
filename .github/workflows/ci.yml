@@ -384,13 +384,20 @@ jobs:
       - name: 🔧 Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      - name: 🏷️ Configure image names
+        id: image_names
+        run: |
+          IMAGES="ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}"
+          if [ -n "${{ secrets.DOCKER_USERNAME }}" ]; then
+            IMAGES="$IMAGES,${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}"
+          fi
+          echo "images=$IMAGES" >> $GITHUB_OUTPUT
+
       - name: 🏷️ Generate Docker metadata / tags
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: |
-            ${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}
-            ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}
+          images: ${{ steps.image_names.outputs.images }}
           tags: |
             type=sha,prefix=sha-,format=short
             type=ref,event=branch
@@ -461,11 +468,14 @@ jobs:
   # JOB 4 ─ Docker Push (only on main branch)
   # ─────────────────────────────────────────────────────────────────────────
   docker-push:
-    name: 🚀 Push to Docker Hub
+    name: 🚀 Push to Container Registry
     runs-on: ubuntu-latest
     timeout-minutes: 10
     needs: docker-build
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    permissions:
+      contents: read
+      packages: write
 
     steps:
       - name: ⬇️ Checkout repository
@@ -485,7 +495,17 @@ jobs:
       - name: 🔧 Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: 🔑 Log in to Docker Hub
+      - name: 🏷️ Configure image names
+        id: image_names
+        run: |
+          IMAGES="ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}"
+          if [ -n "${{ secrets.DOCKER_USERNAME }}" ]; then
+            IMAGES="$IMAGES,${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}"
+          fi
+          echo "images=$IMAGES" >> $GITHUB_OUTPUT
+
+      - name: 🔑 Log in to Docker Hub (if credentials provided)
+        if: "${{ secrets.DOCKER_USERNAME != '' && secrets.DOCKER_PASSWORD != '' }}"
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
@@ -502,9 +522,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: |
-            ${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}
-            ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}
+          images: ${{ steps.image_names.outputs.images }}
           tags: |
             type=sha,prefix=sha-,format=short
             type=ref,event=branch
