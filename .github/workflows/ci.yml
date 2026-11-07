@@ -149,11 +149,23 @@ jobs:
           echo "DVC reproduction complete"
 
       - name: ✅ Validate model artifact exists
+        env:
+          DAGSHUB_USERNAME: ${{ secrets.DAGSHUB_USERNAME }}
+          DAGSHUB_PASSWORD: ${{ secrets.DAGSHUB_PASSWORD }}
         run: |
           if [ -f "models/svm_model.pkl" ]; then
             echo "✅ svm_model.pkl found ($(du -h models/svm_model.pkl | cut -f1))"
           else
             echo "❌ svm_model.pkl not found!"
+            echo "=== DVC Repro Log ==="
+            cat dvc_repro.log || true
+            if [ -z "$DAGSHUB_USERNAME" ] || [ -z "$DAGSHUB_PASSWORD" ]; then
+              echo ""
+              echo "⚠️ IMPORTANT: DAGSHUB_USERNAME and DAGSHUB_PASSWORD secrets are missing!"
+              echo "DVC cannot pull the dataset from DagsHub without credentials."
+              echo "Please add DAGSHUB_USERNAME and DAGSHUB_PASSWORD in:"
+              echo "GitHub Repo -> Settings -> Secrets and variables -> Actions"
+            fi
             exit 1
           fi
 
