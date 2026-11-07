@@ -29,7 +29,17 @@ if not hasattr(_pcommon, 'infer_dtype_from_object'):
         pass
 
 # Evidently v0.4+ API
-from evidently import ColumnMapping
+try:
+    from evidently import ColumnMapping
+except ImportError:
+    try:
+        from evidently.pipeline.column_mapping import ColumnMapping
+    except ImportError:
+        try:
+            from evidently.legacy.pipeline.column_mapping import ColumnMapping
+        except ImportError:
+            ColumnMapping = None
+
 from evidently.metric_preset import DataDriftPreset, ClassificationPreset
 from evidently.report import Report
 
@@ -75,16 +85,21 @@ def compute_drift_report(
     # Keep only shared feature columns
     shared_features = [c for c in FEATURE_COLS if c in reference_df.columns and c in current_df.columns]
 
-    column_mapping = ColumnMapping(
-        target=TARGET_COL if TARGET_COL in reference_df.columns else None,
-        numerical_features=shared_features,
-    )
+    mapping = None
+    if ColumnMapping is not None:
+        try:
+            mapping = ColumnMapping(
+                target=TARGET_COL if TARGET_COL in reference_df.columns else None,
+                numerical_features=shared_features,
+            )
+        except Exception:
+            mapping = None
 
     report = Report(metrics=[DataDriftPreset()])
     report.run(
         reference_data=reference_df[shared_features + ([TARGET_COL] if TARGET_COL in reference_df.columns else [])],
         current_data=current_df[shared_features + ([TARGET_COL] if TARGET_COL in current_df.columns else [])],
-        column_mapping=column_mapping,
+        column_mapping=mapping,
     )
 
     html_path = os.path.join(output_dir, f"drift_report_{tag}.html")
@@ -162,16 +177,21 @@ def compute_classification_report(
     tag = tag or datetime.utcnow().strftime("%Y%m%d_%H%M%S")
 
     shared_features = [c for c in FEATURE_COLS if c in reference_df.columns and c in current_df.columns]
-    column_mapping = ColumnMapping(
-        target=TARGET_COL,
-        numerical_features=shared_features,
-    )
+    mapping = None
+    if ColumnMapping is not None:
+        try:
+            mapping = ColumnMapping(
+                target=TARGET_COL,
+                numerical_features=shared_features,
+            )
+        except Exception:
+            mapping = None
 
     report = Report(metrics=[ClassificationPreset()])
     report.run(
         reference_data=reference_df,
         current_data=current_df,
-        column_mapping=column_mapping,
+        column_mapping=mapping,
     )
 
     html_path = os.path.join(output_dir, f"classification_report_{tag}.html")

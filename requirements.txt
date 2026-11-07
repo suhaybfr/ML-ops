@@ -23,7 +23,7 @@ httpx
 prometheus_client
 
 # Monitoring — Evidently data drift
-evidently
+evidently>=0.4.0,<=0.4.38
 
 # Testing & Linting
 pytest
