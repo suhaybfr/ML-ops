@@ -1,0 +1,105 @@
+{
+  "title": "Student Performance Predictor — MLOps Dashboard",
+  "uid": "student-perf-mlops",
+  "timezone": "browser",
+  "schemaVersion": 38,
+  "version": 1,
+  "refresh": "10s",
+  "tags": ["mlops", "prediction", "svm"],
+  "panels": [
+    {
+      "id": 1,
+      "title": "Model Status",
+      "type": "stat",
+      "gridPos": {"h": 4, "w": 4, "x": 0, "y": 0},
+      "targets": [
+        {
+          "expr": "model_loaded",
+          "legendFormat": "Model Loaded"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "red", "value": 0},
+              {"color": "green", "value": 1}
+            ]
+          },
+          "mappings": [
+            {"options": {"0": {"text": "❌ Not Loaded"}, "1": {"text": "✅ Ready"}}, "type": "value"}
+          ]
+        }
+      }
+    },
+    {
+      "id": 2,
+      "title": "Requests per Second",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 10, "x": 4, "y": 0},
+      "targets": [
+        {
+          "expr": "rate(prediction_requests_total[1m])",
+          "legendFormat": "{{endpoint}} - {{result}}"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "P50 / P95 / P99 Latency",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 10, "x": 14, "y": 0},
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, rate(prediction_latency_seconds_bucket[5m]))",
+          "legendFormat": "p50"
+        },
+        {
+          "expr": "histogram_quantile(0.95, rate(prediction_latency_seconds_bucket[5m]))",
+          "legendFormat": "p95"
+        },
+        {
+          "expr": "histogram_quantile(0.99, rate(prediction_latency_seconds_bucket[5m]))",
+          "legendFormat": "p99"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Total Predictions (all time)",
+      "type": "stat",
+      "gridPos": {"h": 4, "w": 4, "x": 0, "y": 4},
+      "targets": [
+        {
+          "expr": "sum(prediction_requests_total)",
+          "legendFormat": "Total"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Error Rate",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+      "targets": [
+        {
+          "expr": "rate(prediction_errors_total[5m])",
+          "legendFormat": "{{endpoint}} - {{error_type}}"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Batch Size Distribution",
+      "type": "histogram",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+      "targets": [
+        {
+          "expr": "rate(batch_prediction_size_bucket[10m])",
+          "legendFormat": "{{le}}"
+        }
+      ]
+    }
+  ]
+}

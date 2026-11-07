@@ -1,0 +1,119 @@
+# ================================================================
+#  docker-compose.yml — Local development & testing
+# ================================================================
+#
+#  Services:
+#    api         → FastAPI prediction service (port 8000)
+#    prometheus  → Prometheus metrics scraper  (port 9090)
+#    grafana     → Grafana dashboard UI        (port 3000)
+#
+#  Usage:
+#    docker compose up --build          # start everything
+#    docker compose up --build -d       # start in background
+#    docker compose up api              # API only (no monitoring)
+#    docker compose down                # stop and remove containers
+#
+#  Grafana login: admin / admin (change on first login)
+# ================================================================
+
+version: "3.9"
+
+services:
+  # ──────────────────────────────────────────────────────────────
+  # FastAPI prediction service
+  # ──────────────────────────────────────────────────────────────
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+    image: student-performance-predictor:local
+    container_name: mlops-api
+    ports:
+      - "8000:8000"
+    environment:
+      - MODEL_PATH=/app/models/svm_model.pkl
+      - PYTHONUNBUFFERED=1
+    volumes:
+      # Mount models dir so you can swap model without rebuilding
+      - ./models:/app/models:ro
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped
+    networks:
+      - mlops-network
+
+  # ──────────────────────────────────────────────────────────────
+  # Prometheus — scrapes /metrics from the API
+  # ──────────────────────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.51.2
+    container_name: mlops-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/prometheus/alert_rules.yml:/etc/prometheus/alert_rules.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=15d"
+      - "--web.enable-lifecycle"
+    depends_on:
+      - api
+    restart: unless-stopped
+    networks:
+      - mlops-network
+
+  # ──────────────────────────────────────────────────────────────
+  # Grafana — dashboards connected to Prometheus
+  # ──────────────────────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:10.4.2
+    container_name: mlops-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_PATHS_PROVISIONING=/etc/grafana/provisioning
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./monitoring/grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+    networks:
+      - mlops-network
+
+  # ──────────────────────────────────────────────────────────────
+  # Qdrant — vector store for RAG tutor
+  # ──────────────────────────────────────────────────────────────
+  qdrant:
+    image: qdrant/qdrant:v1.9.2
+    container_name: mlops-qdrant
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    restart: unless-stopped
+    networks:
+      - mlops-network
+
+volumes:
+  prometheus_data:
+  grafana_data:
+  qdrant_data:
+
+networks:
+  mlops-network:
+    name: mlops-network

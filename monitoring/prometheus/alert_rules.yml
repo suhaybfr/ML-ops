@@ -1,0 +1,44 @@
+groups:
+  - name: student_predictor_alerts
+    rules:
+      # ── High error rate ────────────────────────────────────────────────────
+      - alert: HighPredictionErrorRate
+        expr: |
+          rate(prediction_errors_total[5m]) > 0.05
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High prediction error rate"
+          description: "Prediction errors > 5% over the past 5 minutes."
+
+      # ── Model not loaded ───────────────────────────────────────────────────
+      - alert: ModelNotLoaded
+        expr: model_loaded == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "ML model is not loaded"
+          description: "The prediction model has not been loaded for > 1 minute."
+
+      # ── Slow predictions ───────────────────────────────────────────────────
+      - alert: SlowPredictions
+        expr: |
+          histogram_quantile(0.95, rate(prediction_latency_seconds_bucket[5m])) > 1.0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "95th-percentile prediction latency > 1 second"
+          description: "Predictions are unusually slow — check for model or resource issues."
+
+      # ── API down ───────────────────────────────────────────────────────────
+      - alert: APIDown
+        expr: up{job="student-predictor-api"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Prediction API is down"
+          description: "Prometheus cannot scrape the Student Performance Predictor API."

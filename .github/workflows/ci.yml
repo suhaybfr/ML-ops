@@ -1,0 +1,566 @@
+# =============================================================================
+#  CI/CD Pipeline — Student Performance MLOps Project
+#  GitHub Actions Workflow
+# =============================================================================
+#
+#  Stages:
+#    1. lint-and-test    → code quality checks + PyTest
+#    2. dvc-pipeline     → reproduce DVC pipeline (prepare → train_svm)
+#    3. docker-build     → build Docker image
+#    4. docker-push      → push image to Docker Hub / GHCR
+#    5. deploy-summary   → post metrics summary as PR comment
+#
+#  Required Secrets (set in GitHub → Settings → Secrets → Actions):
+#    DAGSHUB_USERNAME       - your DagsHub username
+#    DAGSHUB_PASSWORD       - your DagsHub access token
+#    MLFLOW_TRACKING_USERNAME  - same as DAGSHUB_USERNAME
+#    MLFLOW_TRACKING_PASSWORD  - same as DAGSHUB_PASSWORD
+#    DOCKER_USERNAME        - Docker Hub username (for push stage)
+#    DOCKER_PASSWORD        - Docker Hub access token (for push stage)
+#
+# =============================================================================
+
+name: MLOps CI/CD Pipeline
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:          # allow manual trigger from GitHub UI
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true   # cancel older runs on new push to same branch
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Global environment variables
+# ─────────────────────────────────────────────────────────────────────────────
+env:
+  PYTHON_VERSION: "3.11"
+  IMAGE_NAME: student-performance-predictor
+
+# =============================================================================
+jobs:
+# =============================================================================
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # JOB 1 ─ Lint & Test
+  # ─────────────────────────────────────────────────────────────────────────
+  lint-and-test:
+    name: 🧪 Lint & PyTest
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: ⬇️ Checkout repository
+        uses: actions/checkout@v4
+
+      - name: 🐍 Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: 📦 Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install fastapi "uvicorn[standard]" httpx pytest pytest-cov flake8 prometheus_client evidently
+
+      - name: 🔍 Lint with flake8
+        run: |
+          # Stop on syntax errors / undefined names; warn on style issues
+          flake8 src/ app/ --count --select=E9,F63,F7,F82 --show-source --statistics
+          flake8 src/ app/ --count --max-line-length=100 --statistics --exit-zero
+
+      - name: 🧪 Run PyTest with coverage
+        env:
+          PYTHONPATH: src
+        run: |
+          pytest tests/ -v \
+            --tb=short \
+            --cov=src \
+            --cov-report=term-missing \
+            --cov-report=xml:coverage.xml \
+            --junitxml=junit-report.xml
+
+      - name: 📊 Upload coverage report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-report
+          path: coverage.xml
+
+      - name: 📋 Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: junit-test-report
+          path: junit-report.xml
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # JOB 2 ─ DVC Pipeline (data + model reproduction)
+  # ─────────────────────────────────────────────────────────────────────────
+  dvc-pipeline:
+    name: 🔄 DVC Pipeline Reproduction
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    needs: lint-and-test          # only run if tests pass
+
+    steps:
+      - name: ⬇️ Checkout repository
+        uses: actions/checkout@v4
+
+      - name: 🐍 Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: 📦 Install Python dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: ⚙️ Configure DagsHub DVC remote credentials
+        env:
+          DAGSHUB_USERNAME: ${{ secrets.DAGSHUB_USERNAME }}
+          DAGSHUB_PASSWORD: ${{ secrets.DAGSHUB_PASSWORD }}
+        run: |
+          dvc remote modify origin --local auth basic
+          dvc remote modify origin --local user "$DAGSHUB_USERNAME"
+          dvc remote modify origin --local password "$DAGSHUB_PASSWORD"
+
+      - name: 📥 Pull DVC-tracked data & model artifacts
+        env:
+          DAGSHUB_USERNAME: ${{ secrets.DAGSHUB_USERNAME }}
+          DAGSHUB_PASSWORD: ${{ secrets.DAGSHUB_PASSWORD }}
+        run: |
+          dvc pull --no-run-cache || echo "⚠️ Some DVC artifacts could not be pulled — continuing"
+
+      - name: 🔁 Reproduce DVC pipeline (prepare → train_svm)
+        env:
+          MLFLOW_TRACKING_USERNAME: ${{ secrets.MLFLOW_TRACKING_USERNAME }}
+          MLFLOW_TRACKING_PASSWORD: ${{ secrets.MLFLOW_TRACKING_PASSWORD }}
+        run: |
+          # Only reproduce stages that are out-of-date
+          dvc repro --no-commit 2>&1 | tee dvc_repro.log
+          echo "DVC reproduction complete"
+
+      - name: ✅ Validate model artifact exists
+        run: |
+          if [ -f "models/svm_model.pkl" ]; then
+            echo "✅ svm_model.pkl found ($(du -h models/svm_model.pkl | cut -f1))"
+          else
+            echo "❌ svm_model.pkl not found!"
+            exit 1
+          fi
+
+      - name: 📊 Extract and display MLflow metrics
+        env:
+          MLFLOW_TRACKING_USERNAME: ${{ secrets.MLFLOW_TRACKING_USERNAME }}
+          MLFLOW_TRACKING_PASSWORD: ${{ secrets.MLFLOW_TRACKING_PASSWORD }}
+        run: |
+          python - <<'EOF'
+          import mlflow, os
+          mlflow.set_tracking_uri("https://dagshub.com/suhaybfr/ML-ops.mlflow")
+          client = mlflow.tracking.MlflowClient()
+          exp = client.get_experiment_by_name("student_performance_baseline")
+          if exp:
+              runs = client.search_runs(
+                  experiment_ids=[exp.experiment_id],
+                  order_by=["start_time DESC"],
+                  max_results=1,
+              )
+              if runs:
+                  r = runs[0]
+                  print("=== Latest MLflow Run ===")
+                  print(f"Run ID  : {r.info.run_id}")
+                  print(f"Run Name: {r.info.run_name}")
+                  for k, v in sorted(r.data.metrics.items()):
+                      print(f"  {k:<15}: {v:.4f}")
+              else:
+                  print("No runs found.")
+          else:
+              print("Experiment not found.")
+          EOF
+
+      - name: 💾 Push updated DVC artifacts to DagsHub
+        env:
+          DAGSHUB_USERNAME: ${{ secrets.DAGSHUB_USERNAME }}
+          DAGSHUB_PASSWORD: ${{ secrets.DAGSHUB_PASSWORD }}
+        run: |
+          dvc push || echo "⚠️ DVC push failed (non-fatal in CI)"
+
+      - name: 📤 Upload model artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: svm-model-artifact
+          path: models/svm_model.pkl
+          retention-days: 30
+          if-no-files-found: warn
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # JOB 2b ─ Drift Detection (runs after DVC pipeline produces fresh data)
+  # ─────────────────────────────────────────────────────────────────────────
+  drift-check:
+    name: 📊 Evidently Drift Detection
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: dvc-pipeline
+
+    steps:
+      - name: ⬇️ Checkout repository
+        uses: actions/checkout@v4
+
+      - name: 🐍 Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: 📦 Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt evidently
+
+      - name: ⚙️ Configure DVC credentials
+        env:
+          DAGSHUB_USERNAME: ${{ secrets.DAGSHUB_USERNAME }}
+          DAGSHUB_PASSWORD: ${{ secrets.DAGSHUB_PASSWORD }}
+        run: |
+          dvc remote modify origin --local auth basic
+          dvc remote modify origin --local user "$DAGSHUB_USERNAME"
+          dvc remote modify origin --local password "$DAGSHUB_PASSWORD"
+
+      - name: 📥 Pull processed data
+        env:
+          DAGSHUB_USERNAME: ${{ secrets.DAGSHUB_USERNAME }}
+          DAGSHUB_PASSWORD: ${{ secrets.DAGSHUB_PASSWORD }}
+        run: |
+          dvc pull data/processed/ --no-run-cache || echo "⚠️ Could not pull processed data"
+
+      - name: 🔍 Run drift detection
+        env:
+          PYTHONPATH: src
+        run: |
+          python src/monitoring.py \
+            --ref data/processed/train.csv \
+            --cur data/processed/test.csv \
+            --output reports/drift \
+            --tag ${{ github.sha }}
+
+      - name: 📤 Upload drift report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drift-report
+          path: reports/drift/
+          retention-days: 30
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # JOB 2c ─ Retrain (only on main if drift is detected)
+  # ─────────────────────────────────────────────────────────────────────────
+  retrain-if-drift:
+    name: 🔄 Drift-triggered Retrain
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    needs: drift-check
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+
+    steps:
+      - name: ⬇️ Checkout repository
+        uses: actions/checkout@v4
+
+      - name: 🐍 Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: 📦 Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt evidently
+
+      - name: ⚙️ Configure DVC credentials
+        env:
+          DAGSHUB_USERNAME: ${{ secrets.DAGSHUB_USERNAME }}
+          DAGSHUB_PASSWORD: ${{ secrets.DAGSHUB_PASSWORD }}
+        run: |
+          dvc remote modify origin --local auth basic
+          dvc remote modify origin --local user "$DAGSHUB_USERNAME"
+          dvc remote modify origin --local password "$DAGSHUB_PASSWORD"
+
+      - name: 📥 Pull data and artifacts
+        env:
+          DAGSHUB_USERNAME: ${{ secrets.DAGSHUB_USERNAME }}
+          DAGSHUB_PASSWORD: ${{ secrets.DAGSHUB_PASSWORD }}
+        run: |
+          dvc pull --no-run-cache || echo "⚠️ Partial DVC pull"
+
+      - name: 🔄 Run drift-triggered retrain cycle
+        env:
+          PYTHONPATH: src
+          MLFLOW_TRACKING_USERNAME: ${{ secrets.MLFLOW_TRACKING_USERNAME }}
+          MLFLOW_TRACKING_PASSWORD: ${{ secrets.MLFLOW_TRACKING_PASSWORD }}
+        run: |
+          python src/retrain.py \
+            --ref data/processed/train.csv \
+            --cur data/processed/test.csv \
+            --drift-threshold 0.3
+
+      - name: 💾 Push updated artifacts
+        env:
+          DAGSHUB_USERNAME: ${{ secrets.DAGSHUB_USERNAME }}
+          DAGSHUB_PASSWORD: ${{ secrets.DAGSHUB_PASSWORD }}
+        run: |
+          dvc push || echo "⚠️ DVC push failed (non-fatal)"
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # JOB 3 ─ Docker Build
+  # ─────────────────────────────────────────────────────────────────────────
+  docker-build:
+    name: 🐳 Docker Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: [lint-and-test, dvc-pipeline, drift-check]
+
+    steps:
+      - name: ⬇️ Checkout repository
+        uses: actions/checkout@v4
+
+      - name: 📥 Download model artifact from DVC pipeline job
+        uses: actions/download-artifact@v4
+        with:
+          name: svm-model-artifact
+          path: models/
+
+      - name: 🔧 Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: 🏷️ Generate Docker metadata / tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}
+            ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=sha,prefix=sha-,format=short
+            type=ref,event=branch
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+
+      - name: 🏗️ Build Docker image (no push yet)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: Dockerfile
+          push: false
+          load: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: 🔬 Smoke-test the Docker container
+        run: |
+          # Start container in background
+          docker run -d \
+            --name predictor-test \
+            -p 8000:8000 \
+            -e MODEL_PATH=/app/models/svm_model.pkl \
+            ${{ secrets.DOCKER_USERNAME || github.repository_owner }}/${{ env.IMAGE_NAME }}:latest || \
+          docker run -d \
+            --name predictor-test \
+            -p 8000:8000 \
+            $(echo "${{ steps.meta.outputs.tags }}" | head -1)
+
+          # Wait for container to be ready
+          echo "⏳ Waiting for container to start..."
+          for i in $(seq 1 12); do
+            if curl -sf http://localhost:8000/health > /dev/null 2>&1; then
+              echo "✅ Container is healthy!"
+              break
+            fi
+            sleep 5
+          done
+
+          # Test /health endpoint
+          echo "=== GET /health ==="
+          curl -sf http://localhost:8000/health | python3 -m json.tool
+
+          # Test /predict endpoint
+          echo "=== POST /predict ==="
+          curl -sf -X POST http://localhost:8000/predict \
+            -H "Content-Type: application/json" \
+            -d '{"skill_id":5,"attempt_count":2,"ms_first_response":4500,"hint_count":1,"overlap_time":0.1}' \
+            | python3 -m json.tool
+
+          # Clean up
+          docker stop predictor-test && docker rm predictor-test
+
+      - name: 💾 Save Docker image as artifact (for push job)
+        run: |
+          docker save $(echo "${{ steps.meta.outputs.tags }}" | head -1) \
+            | gzip > docker-image.tar.gz
+
+      - name: 📤 Upload Docker image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-image
+          path: docker-image.tar.gz
+          retention-days: 1
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # JOB 4 ─ Docker Push (only on main branch)
+  # ─────────────────────────────────────────────────────────────────────────
+  docker-push:
+    name: 🚀 Push to Docker Hub
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: docker-build
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+
+    steps:
+      - name: ⬇️ Checkout repository
+        uses: actions/checkout@v4
+
+      - name: 📥 Download Docker image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-image
+
+      - name: 📥 Download model artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: svm-model-artifact
+          path: models/
+
+      - name: 🔧 Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: 🔑 Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: 🔑 Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 🏷️ Generate Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}
+            ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=sha,prefix=sha-,format=short
+            type=ref,event=branch
+            type=raw,value=latest
+
+      - name: 🏗️ Build & Push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: 🎉 Output deployment summary
+        run: |
+          echo "## 🚀 Deployment Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Item | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| **Image** | \`${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}:latest\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **GHCR Image** | \`ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:latest\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Commit** | \`${{ github.sha }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Branch** | \`${{ github.ref_name }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Run the container locally:" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
+          echo "docker pull ${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}:latest" >> $GITHUB_STEP_SUMMARY
+          echo "docker run -p 8000:8000 ${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}:latest" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # JOB 5 ─ Post PR Comment with Metrics Summary
+  # ─────────────────────────────────────────────────────────────────────────
+  metrics-comment:
+    name: 📊 Post Metrics Summary
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: dvc-pipeline
+    if: github.event_name == 'pull_request'
+
+    permissions:
+      pull-requests: write
+
+    steps:
+      - name: ⬇️ Checkout repository
+        uses: actions/checkout@v4
+
+      - name: 🐍 Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: 📦 Install mlflow
+        run: pip install mlflow
+
+      - name: 📊 Fetch metrics and post PR comment
+        env:
+          MLFLOW_TRACKING_USERNAME: ${{ secrets.MLFLOW_TRACKING_USERNAME }}
+          MLFLOW_TRACKING_PASSWORD: ${{ secrets.MLFLOW_TRACKING_PASSWORD }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.number }}
+        run: |
+          python - <<'PYEOF'
+          import mlflow, os, subprocess
+
+          mlflow.set_tracking_uri("https://dagshub.com/suhaybfr/ML-ops.mlflow")
+          client = mlflow.tracking.MlflowClient()
+          exp = client.get_experiment_by_name("student_performance_baseline")
+
+          body = "## 🤖 MLflow Model Metrics — Latest Run\n\n"
+
+          if exp:
+              runs = client.search_runs(
+                  experiment_ids=[exp.experiment_id],
+                  order_by=["start_time DESC"],
+                  max_results=1,
+              )
+              if runs:
+                  r = runs[0]
+                  body += f"**Run ID:** `{r.info.run_id}`  \n"
+                  body += f"**Run Name:** `{r.info.run_name}`  \n\n"
+                  body += "| Metric | Value |\n|--------|-------|\n"
+                  for k, v in sorted(r.data.metrics.items()):
+                      body += f"| {k} | {v:.4f} |\n"
+                  body += "\n\n🔗 [View on DagsHub MLflow](https://dagshub.com/suhaybfr/ML-ops.mlflow)\n"
+              else:
+                  body += "_No runs found in experiment._\n"
+          else:
+              body += "_Experiment not found — check DagsHub credentials._\n"
+
+          # Write comment body to file
+          with open("pr_comment.md", "w") as f:
+              f.write(body)
+
+          print(body)
+          PYEOF
+
+          # Post comment to PR using GitHub CLI
+          gh pr comment $PR_NUMBER --body-file pr_comment.md || \
+            echo "⚠️ Could not post PR comment (non-fatal)"

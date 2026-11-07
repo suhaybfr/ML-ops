@@ -57,23 +57,75 @@ DVC versions large datasets and fitted `.pkl` models (`data/raw/skill_builder_da
 
 | Path | Role |
 |---|---|
-| `data/raw/skill_builder_data.csv.dvc` | DVC pointer for original 525,534-row ASSISTments dataset. |
-| `data/interim/cleaned_data.csv.dvc` | DVC pointer for cleaned 26-column intermediate dataset. |
-| `data/processed/engineered_features.csv.dvc` | DVC pointer for 17-column engineered feature matrix. |
-| `src/features.py` | Shared 11-feature schema, leakage guardrails, and `select_xy()` helper. |
-| `src/prepare.py` | Validation, `attempt_count` outlier capping, and stratified train/test partitioning. |
+| `.dvc/` | DVC configuration and local metadata. |
+| `.dvc/config.local` | Local remote credentials; never commit. |
+| `.github/workflows/ci.yml` | 7-stage CI/CD pipeline (lint, test, DVC, drift, retrain, build, push). |
+| `app/main.py` | FastAPI REST service with Prometheus metrics and prediction endpoints. |
+| `app/tutor.py` | Gemini-powered conversational tutor with RAG (LlamaIndex + Qdrant). |
+| `data/raw/` | Original DVC-managed input data (`skill_builder_data.csv.dvc`). |
+| `data/interim/` | Cleaned intermediate dataset (`cleaned_data.csv.dvc`). |
+| `data/processed/` | Processed 17-column feature matrix & train/test splits (`engineered_features.csv.dvc`). |
+| `monitoring/` | Prometheus scraping/alert rules and Grafana dashboard configurations. |
+| `src/features.py` | Shared 11-feature schema, leakage guardrails, and select_xy() helper. |
+| `src/prepare.py` | Preprocessing, outlier capping, and stratified split stage. |
 | `src/train.py` | Logistic Regression & Random Forest baseline training, slice diagnostics, and MLflow logging. |
-| `src/train_svm.py` | RBF-kernel SVM training, evaluation, diagnostic plots, and MLflow logging. |
-| `src/experiments.py` | Multi-split (`80/20`, `70/30`, `60/40`) and 5-fold CV comparison suite. |
-| `src/evaluation.py` | Shared 8-metric definitions plus struggling-student (`class 0`) & subgroup slice checks. |
-| `src/utils.py` | DAGsHub MLflow auth, offline fallback, standardized run tagging, and `MLmodel` upload. |
-| `tests/test_phase1_pipeline.py` | Automated `pytest` suite checking leakage, schema, model inference, and quality gates. |
-| `reports/*.json`, `reports/*.csv` | Git-tracked validation summaries matching DAGsHub MLflow runs. |
+| `src/train_svm.py` | Scaled RBF-kernel SVM training, evaluation, figures, and MLflow logging. |
+| `src/experiments.py` | Multi-split (80/20, 70/30, 60/40) and 5-fold CV comparison suite. |
+| `src/evaluation.py` | Shared 8-metric definitions plus struggling-student & subgroup slice checks. |
+| `src/monitoring.py` | Evidently AI data drift detection and reporting. |
+| `src/retrain.py` | Drift-triggered automated retraining and model registry promotion. |
+| `src/utils.py` | DAGsHub MLflow auth, offline fallback, standardized run tagging, and MLmodel upload. |
+| `models/` | DVC-tracked local model artifacts (`baseline_model.pkl`, `logreg_baseline.pkl`, `svm_model.pkl`). |
+| `Dockerfile` | Multi-stage Docker container build. |
+| `docker-compose.yml` | Full-stack orchestration (API, Prometheus, Grafana, Qdrant). |
+| `dvc.yaml` | Pipeline stages, dependencies, parameters, and outputs. |
+| `dvc.lock` | Locked hashes for a pipeline state. |
+| `params.yaml` | Preparation, training, SVM, and experiment configuration. |
+| `reports/baseline_metrics.json` | Full baseline metrics, calibration & slice checks. |
+| `reports/svm_metrics.json` | Standalone SVM metrics & slice checks. |
+| `reports/baseline_model_report.md` | Baseline results and architecture report. |
+| `reports/model_validation_report.md` | SVM and model-comparison evaluation report. |
+| `docs/MODEL_VALIDATION.md` | Model validation methods, metrics and results. |
+| `notebooks/` | Exploratory and baseline modelling work. |
+| `tests/` | PyTest test suite (tests/test_pipeline.py, tests/test_phase1_pipeline.py). |
+| `requirements.txt` | Python dependencies. |
+
+## Implemented versus Planned
+
+Implemented:
+- Git/GitHub workflow and 7-stage GitHub Actions CI/CD automation.
+- DVC dataset tracking and DAGsHub remote storage.
+- Unified 11-feature schema with leakage prevention (`src/features.py`).
+- Reproducible DVC preparation and training stages (`prepare` -> `train` -> `train_svm` -> `experiments`).
+- Logistic Regression, Random Forest, RBF-kernel SVM, and multi-split / 5-fold cross-validation experiment suite.
+- Comprehensive MLflow experiment and artifact logging (plots, model bundles, JSON summaries).
+- FastAPI REST prediction service with Prometheus metrics exposition (`/metrics`).
+- Conversational LLM tutor with RAG using Google Gemini, LlamaIndex, and Qdrant.
+- Evidently AI data drift detection generating HTML/JSON reports.
+- Prometheus alerting rules and auto-provisioned Grafana monitoring dashboards.
+- Automated retraining loop with MLflow Model Registry staging and production promotion.
+- Multi-stage Docker image and Docker Compose local orchestration.
+- Comprehensive test suite with PyTest.
+
+Planned for future iteration:
+- Production Kubernetes (k8s/Helm) deployment manifests if cloud cluster hosting is required.
+- Integration of PostgreSQL database for persistent student interaction logging.
+
+## Teammate Workflow
+
+1. Change preprocessing in `src/prepare.py` or feature definitions in `src/features.py`.
+2. Add relevant configuration to `params.yaml` and `dvc.yaml`.
+3. Update features or model logic in `src/train.py` or `src/train_svm.py`.
+4. Keep held-out test evaluation comparable to the baseline.
+5. Log new parameters, metrics, and artifacts to the same MLflow experiment.
+6. Run `dvc repro` and inspect the new MLflow run.
+7. Update the report when a new model becomes the accepted benchmark.
 
 ## Reproducing and Verifying Locally
 
+From the repository root, with dependencies installed and DVC data available:
 ```bash
 dvc pull
 dvc repro
-pytest -v
+pytest tests/ -v
 ```

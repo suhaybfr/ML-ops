@@ -17,3 +17,13 @@ mlartifacts/
 
 # Jupyter notebook checkpoints
 .ipynb_checkpoints/
+
+# Drift reports (generated artifacts — not source-controlled)
+reports/drift/
+
+# Coverage reports
+coverage.xml
+.coverage
+
+# Test artifacts
+junit-report.xml

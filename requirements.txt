@@ -1,3 +1,4 @@
+# Core ML & data science
 pandas
 numpy
 scikit-learn
@@ -6,11 +7,31 @@ seaborn
 pyyaml
 joblib
 requests
+
+# MLflow & DVC
 mlflow
 dvc
 dvc-http
+dvc[s3]
+
+# FastAPI serving
+fastapi
+"uvicorn[standard]"
+httpx
+
+# Monitoring — Prometheus metrics
+prometheus_client
+
+# Monitoring — Evidently data drift
+evidently
+
+# Testing & Linting
+pytest
+pytest-cov
+flake8
+
+# Notebooks (dev only)
 jupyter
 ipykernel
 nbformat
 nbconvert
-pytest

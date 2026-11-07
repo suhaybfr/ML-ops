@@ -1,0 +1,60 @@
+# ================================================================
+# .dockerignore — Exclude unnecessary files from Docker context
+# ================================================================
+
+# Git & CI
+.git
+.github
+.gitignore
+
+# Python caches
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Notebooks & dev files
+notebooks/
+*.ipynb
+.ipynb_checkpoints/
+
+# DVC internal files (remote config may have credentials)
+.dvc/config.local
+.dvc/tmp/
+
+# Test outputs
+.pytest_cache/
+.coverage
+coverage.xml
+junit-report.xml
+
+# IDE
+.vscode/
+.idea/
+*.code-workspace
+
+# OS
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# Docs
+docs/
+*.md
+
+# Data (tracked via DVC, not Docker)
+data/
+
+# Reports & figures (generated at runtime)
+reports/
