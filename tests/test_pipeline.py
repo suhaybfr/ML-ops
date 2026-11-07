@@ -212,24 +212,6 @@ class TestModelArtifacts:
 class TestFastAPIEndpoints:
     """Smoke tests for the FastAPI prediction service."""
 
-    @classmethod
-    @pytest.fixture(scope="class")
-    def client(cls):
-        """Create a TestClient for the FastAPI app."""
-        try:
-            from fastapi.testclient import TestClient
-
-            # Resolve app module path
-            app_path = os.path.join(os.path.dirname(__file__), "..", "app", "main.py")
-            if not os.path.exists(app_path):
-                pytest.skip("app/main.py not found — FastAPI app not yet deployed")
-
-            sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
-            from main import app  # noqa: F401
-            return TestClient(app)
-        except ImportError:
-            pytest.skip("fastapi or httpx not installed")
-
     def test_health_endpoint(self, client):
         """GET /health returns 200 with status=ok."""
         response = client.get("/health")
