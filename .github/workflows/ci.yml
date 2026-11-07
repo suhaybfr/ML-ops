@@ -252,10 +252,16 @@ jobs:
           DAGSHUB_PASSWORD: ${{ secrets.DAGSHUB_PASSWORD }}
         run: |
           dvc pull data/processed/ --no-run-cache || echo "⚠️ Could not pull processed data"
+          if [ ! -f "data/processed/train.csv" ]; then
+            echo "Generating train/test split via src.prepare..."
+            python -m src.prepare || true
+          fi
 
       - name: 🔍 Run drift detection
         env:
           PYTHONPATH: .:src
+          MLFLOW_TRACKING_USERNAME: ${{ secrets.MLFLOW_TRACKING_USERNAME }}
+          MLFLOW_TRACKING_PASSWORD: ${{ secrets.MLFLOW_TRACKING_PASSWORD }}
         run: |
           python src/monitoring.py \
             --ref data/processed/train.csv \
@@ -311,6 +317,10 @@ jobs:
           DAGSHUB_PASSWORD: ${{ secrets.DAGSHUB_PASSWORD }}
         run: |
           dvc pull --no-run-cache || echo "⚠️ Partial DVC pull"
+          if [ ! -f "data/processed/train.csv" ]; then
+            echo "Generating train/test split via src.prepare..."
+            python -m src.prepare || true
+          fi
 
       - name: 🔄 Run drift-triggered retrain cycle
         env:

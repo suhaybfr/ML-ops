@@ -19,6 +19,15 @@ from typing import Optional
 
 import pandas as pd
 
+# Compatibility patch: evidently imports infer_dtype_from_object which was removed in pandas >= 2.2
+import pandas.core.dtypes.common as _pcommon
+if not hasattr(_pcommon, 'infer_dtype_from_object'):
+    try:
+        from pandas._libs.lib import infer_dtype as _infer_dtype
+        _pcommon.infer_dtype_from_object = lambda val: (_infer_dtype(val), None)
+    except Exception:
+        pass
+
 # Evidently v0.4+ API
 from evidently import ColumnMapping
 from evidently.metric_preset import DataDriftPreset, ClassificationPreset

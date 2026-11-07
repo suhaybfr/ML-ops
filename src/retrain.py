@@ -50,8 +50,11 @@ def _run_drift_check(ref_path: str, cur_path: str) -> dict:
     try:
         from monitoring import compute_drift_report
     except ImportError:
-        print("[Retrain] monitoring.py not found — skipping drift check.")
-        return {"drift_share": 0.0, "dataset_drifted": False, "feature_drift": {}}
+        try:
+            from src.monitoring import compute_drift_report
+        except ImportError:
+            print("[Retrain] monitoring.py not found — skipping drift check.")
+            return {"drift_share": 0.0, "dataset_drifted": False, "feature_drift": {}}
 
     ref_df = pd.read_csv(ref_path)
     cur_df = pd.read_csv(cur_path)

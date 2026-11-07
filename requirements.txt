@@ -1,5 +1,5 @@
 # Core ML & data science
-pandas
+pandas<2.2.0
 numpy
 scikit-learn
 matplotlib
