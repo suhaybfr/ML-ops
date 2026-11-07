@@ -1,27 +1,20 @@
-# ================================================================
-#  docker-compose.yml — Local development & testing
-# ================================================================
-#
-#  Services:
-#    api         → FastAPI prediction service (port 8000)
-#    prometheus  → Prometheus metrics scraper  (port 9090)
-#    grafana     → Grafana dashboard UI        (port 3000)
+# =============================================================================
+#  docker-compose.yml — Phase 2 FastAPI Inference + Optional Phase 3 Profiles
+# =============================================================================
 #
 #  Usage:
-#    docker compose up --build          # start everything
-#    docker compose up --build -d       # start in background
-#    docker compose up api              # API only (no monitoring)
-#    docker compose down                # stop and remove containers
+#    docker compose up --build                     # Phase 2: FastAPI service only
+#    docker compose --profile monitoring up -d     # API + Prometheus + Grafana
+#    docker compose --profile tutor up -d          # API + Qdrant vector store
+#    docker compose --profile full up --build -d   # Full stack (API + Monitoring + Qdrant)
+#    docker compose down                           # Stop and remove containers
 #
-#  Grafana login: admin / admin (change on first login)
-# ================================================================
-
-version: "3.9"
+# =============================================================================
 
 services:
-  # ──────────────────────────────────────────────────────────────
-  # FastAPI prediction service
-  # ──────────────────────────────────────────────────────────────
+  # ───────────────────────────────────────────────────────────────────────────
+  # Phase 2 Core Service: FastAPI Student Performance Predictor (port 8000)
+  # ───────────────────────────────────────────────────────────────────────────
   api:
     build:
       context: .
@@ -32,14 +25,21 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - MODEL_PATH=/app/models/svm_model.pkl
+      - MODEL_PATH=/app/models/baseline_model.pkl
+      - MLFLOW_MODEL_URI=${MLFLOW_MODEL_URI:-}
+      - MLFLOW_TRACKING_USERNAME=${MLFLOW_TRACKING_USERNAME:-}
+      - MLFLOW_TRACKING_PASSWORD=${MLFLOW_TRACKING_PASSWORD:-}
       - PYTHONUNBUFFERED=1
     volumes:
-      # Mount models dir so you can swap model without rebuilding
       - ./models:/app/models:ro
     healthcheck:
-      test: ["CMD", "python", "-c",
-             "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import json, urllib.request; d = json.loads(urllib.request.urlopen('http://localhost:8000/health').read()); assert d.get('status') == 'ok' and d.get('model_loaded') is True",
+        ]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -48,12 +48,13 @@ services:
     networks:
       - mlops-network
 
-  # ──────────────────────────────────────────────────────────────
-  # Prometheus — scrapes /metrics from the API
-  # ──────────────────────────────────────────────────────────────
+  # ───────────────────────────────────────────────────────────────────────────
+  # Phase 3 Optional Profile (`monitoring` / `full`): Prometheus (port 9090)
+  # ───────────────────────────────────────────────────────────────────────────
   prometheus:
     image: prom/prometheus:v2.51.2
     container_name: mlops-prometheus
+    profiles: ["monitoring", "phase3", "full"]
     ports:
       - "9090:9090"
     volumes:
@@ -71,12 +72,13 @@ services:
     networks:
       - mlops-network
 
-  # ──────────────────────────────────────────────────────────────
-  # Grafana — dashboards connected to Prometheus
-  # ──────────────────────────────────────────────────────────────
+  # ───────────────────────────────────────────────────────────────────────────
+  # Phase 3 Optional Profile (`monitoring` / `full`): Grafana (port 3000)
+  # ───────────────────────────────────────────────────────────────────────────
   grafana:
     image: grafana/grafana:10.4.2
     container_name: mlops-grafana
+    profiles: ["monitoring", "phase3", "full"]
     ports:
       - "3000:3000"
     environment:
@@ -87,19 +89,20 @@ services:
       - grafana_data:/var/lib/grafana
       - ./monitoring/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
       - ./monitoring/grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
-      - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
     depends_on:
       - prometheus
     restart: unless-stopped
     networks:
       - mlops-network
 
-  # ──────────────────────────────────────────────────────────────
-  # Qdrant — vector store for RAG tutor
-  # ──────────────────────────────────────────────────────────────
+  # ───────────────────────────────────────────────────────────────────────────
+  # Phase 3 Optional Profile (`tutor` / `full`): Qdrant Vector Store (port 6333)
+  # ───────────────────────────────────────────────────────────────────────────
   qdrant:
     image: qdrant/qdrant:v1.9.2
     container_name: mlops-qdrant
+    profiles: ["tutor", "phase3", "full"]
     ports:
       - "6333:6333"
       - "6334:6334"
