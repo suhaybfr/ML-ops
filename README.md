@@ -1,5 +1,9 @@
 # AI-Based Digital Learning Assistant — MLOps Project
 
+[![MLOps CI/CD Pipeline](https://github.com/suhaybfr/ML-ops/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/suhaybfr/ML-ops/actions)
+[![MLflow](https://img.shields.io/badge/MLflow-Tracking-blue)](https://dagshub.com/suhaybfr/ML-ops.mlflow)
+[![DVC](https://img.shields.io/badge/DVC-Versioned-9cf)](https://dagshub.com/suhaybfr/ML-ops.dvc)
+
 ## Overview
 
 An AI-based digital learning assistant that predicts student performance and provides personalized learning support.  The system combines:
@@ -341,3 +345,12 @@ Test coverage:
 | MLflow Model Registry integration | ✅ Done |
 | LLM/RAG Tutor (Gemini + LlamaIndex + Qdrant) | ✅ Done |
 | Monitoring alerting rules (Prometheus) | ✅ Done |
+
+---
+
+## Contributors
+
+* **Suhayb** ([@suhaybfr](https://github.com/suhaybfr)) — Project Lead & Serving
+* **Monica** ([@monicaguru10](https://github.com/monicaguru10)) — CI/CD Pipeline & MLflow Artifact Logging
+* **Neetu** ([@aekaboteneetu](https://github.com/aekaboteneetu))
+* **Akhilesh** ([@akhileshchandaluri](https://github.com/akhileshchandaluri))
