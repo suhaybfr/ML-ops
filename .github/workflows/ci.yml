@@ -76,7 +76,7 @@ jobs:
 
       - name: 🧪 Run PyTest with coverage
         env:
-          PYTHONPATH: src
+          PYTHONPATH: .:src
         run: |
           pytest tests/ -v \
             --tb=short \
@@ -243,7 +243,7 @@ jobs:
 
       - name: 🔍 Run drift detection
         env:
-          PYTHONPATH: src
+          PYTHONPATH: .:src
         run: |
           python src/monitoring.py \
             --ref data/processed/train.csv \
@@ -302,7 +302,7 @@ jobs:
 
       - name: 🔄 Run drift-triggered retrain cycle
         env:
-          PYTHONPATH: src
+          PYTHONPATH: .:src
           MLFLOW_TRACKING_USERNAME: ${{ secrets.MLFLOW_TRACKING_USERNAME }}
           MLFLOW_TRACKING_PASSWORD: ${{ secrets.MLFLOW_TRACKING_PASSWORD }}
         run: |

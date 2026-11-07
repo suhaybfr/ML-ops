@@ -16,7 +16,7 @@ dvc[s3]
 
 # FastAPI serving
 fastapi
-"uvicorn[standard]"
+uvicorn[standard]
 httpx
 
 # Monitoring — Prometheus metrics
