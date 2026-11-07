@@ -1,0 +1,214 @@
+{
+  "stage": "train",
+  "feature_set": "engineered_11",
+  "features": [
+    "log_opportunity",
+    "attempt_count",
+    "hint_count",
+    "bottom_hint",
+    "hint_ratio",
+    "user_prev_acc",
+    "problem_difficulty",
+    "skill_difficulty",
+    "is_skill_unmapped",
+    "log_response_time",
+    "is_rapid_guess"
+  ],
+  "train_samples": 80000,
+  "test_samples": 20000,
+  "models": {
+    "logistic_regression_baseline": {
+      "artifact_path": "models/logreg_baseline.pkl",
+      "hyperparameters": {
+        "C": 1.0,
+        "max_iter": 1000,
+        "class_weight": "balanced",
+        "solver": "lbfgs",
+        "scaler": "StandardScaler",
+        "random_state": 42
+      },
+      "metrics": {
+        "accuracy": 0.8917,
+        "precision": 0.918762,
+        "recall": 0.922143,
+        "f1_score": 0.92045,
+        "roc_auc": 0.940371,
+        "pr_auc": 0.961383,
+        "r2_score": 0.643503,
+        "mcc": 0.750874
+      },
+      "risk_and_slice_diagnostics": {
+        "confusion_matrix": {
+          "tn": 5303,
+          "fp": 1108,
+          "fn": 1058,
+          "tp": 12531
+        },
+        "struggling_student_class0": {
+          "precision": 0.8337,
+          "recall_specificity": 0.8272,
+          "f1_score": 0.8304,
+          "missed_intervention_rate_fpr": 0.1728
+        },
+        "macro_f1": 0.8754,
+        "brier_score": 0.0821,
+        "recommended_macro_f1_threshold": 0.375,
+        "macro_f1_at_recommended_threshold": 0.8874,
+        "slices": {
+          "mapped_skills": {
+            "samples": 17007,
+            "accuracy": 0.8815,
+            "f1_score": 0.9148,
+            "macro_f1": 0.8602,
+            "roc_auc": 0.9287
+          },
+          "unmapped_skills": {
+            "samples": 2993,
+            "accuracy": 0.9495,
+            "f1_score": 0.9579,
+            "macro_f1": 0.9475,
+            "roc_auc": 0.9832
+          },
+          "normal_latency_ge_3s": {
+            "samples": 18424,
+            "accuracy": 0.8885,
+            "f1_score": 0.9198,
+            "macro_f1": 0.8684,
+            "roc_auc": 0.9337
+          },
+          "rapid_guess_lt_3s": {
+            "samples": 1576,
+            "accuracy": 0.9296,
+            "f1_score": 0.9312,
+            "macro_f1": 0.9295,
+            "roc_auc": 0.9857
+          },
+          "cold_start_opportunity_1": {
+            "samples": 1675,
+            "accuracy": 0.8137,
+            "f1_score": 0.8421,
+            "macro_f1": 0.8075,
+            "roc_auc": 0.8806
+          },
+          "practiced_opportunity_gt_1": {
+            "samples": 18325,
+            "accuracy": 0.8988,
+            "f1_score": 0.9266,
+            "macro_f1": 0.882,
+            "roc_auc": 0.9453
+          }
+        }
+      },
+      "standardized_coefficients": {
+        "log_opportunity": 0.273436,
+        "attempt_count": -4.661646,
+        "hint_count": -0.928493,
+        "bottom_hint": -1.740015,
+        "hint_ratio": -1.03346,
+        "user_prev_acc": 0.634046,
+        "problem_difficulty": 1.215334,
+        "skill_difficulty": 0.069701,
+        "is_skill_unmapped": 0.424023,
+        "log_response_time": -0.063186,
+        "is_rapid_guess": -0.546003
+      }
+    },
+    "random_forest_baseline": {
+      "artifact_path": "models/baseline_model.pkl",
+      "hyperparameters": {
+        "n_estimators": 100,
+        "max_depth": 10,
+        "random_state": 42
+      },
+      "metrics": {
+        "accuracy": 0.94675,
+        "precision": 0.930496,
+        "recall": 0.996026,
+        "f1_score": 0.962147,
+        "roc_auc": 0.977285,
+        "pr_auc": 0.987564,
+        "r2_score": 0.80224,
+        "mcc": 0.878499
+      },
+      "risk_and_slice_diagnostics": {
+        "confusion_matrix": {
+          "tn": 5400,
+          "fp": 1011,
+          "fn": 54,
+          "tp": 13535
+        },
+        "struggling_student_class0": {
+          "precision": 0.9901,
+          "recall_specificity": 0.8423,
+          "f1_score": 0.9102,
+          "missed_intervention_rate_fpr": 0.1577
+        },
+        "macro_f1": 0.9362,
+        "brier_score": 0.0434,
+        "recommended_macro_f1_threshold": 0.525,
+        "macro_f1_at_recommended_threshold": 0.9368,
+        "slices": {
+          "mapped_skills": {
+            "samples": 17007,
+            "accuracy": 0.9402,
+            "f1_score": 0.9585,
+            "macro_f1": 0.9256,
+            "roc_auc": 0.972
+          },
+          "unmapped_skills": {
+            "samples": 2993,
+            "accuracy": 0.984,
+            "f1_score": 0.9867,
+            "macro_f1": 0.9833,
+            "roc_auc": 0.9942
+          },
+          "normal_latency_ge_3s": {
+            "samples": 18424,
+            "accuracy": 0.9425,
+            "f1_score": 0.96,
+            "macro_f1": 0.9287,
+            "roc_auc": 0.9732
+          },
+          "rapid_guess_lt_3s": {
+            "samples": 1576,
+            "accuracy": 0.9968,
+            "f1_score": 0.9969,
+            "macro_f1": 0.9968,
+            "roc_auc": 0.9994
+          },
+          "cold_start_opportunity_1": {
+            "samples": 1675,
+            "accuracy": 0.8949,
+            "f1_score": 0.9183,
+            "macro_f1": 0.8856,
+            "roc_auc": 0.9451
+          },
+          "practiced_opportunity_gt_1": {
+            "samples": 18325,
+            "accuracy": 0.9515,
+            "f1_score": 0.9658,
+            "macro_f1": 0.9412,
+            "roc_auc": 0.9796
+          }
+        }
+      },
+      "gini_feature_importances": {
+        "log_opportunity": 0.009169,
+        "attempt_count": 0.421642,
+        "hint_count": 0.135649,
+        "bottom_hint": 0.143652,
+        "hint_ratio": 0.126989,
+        "user_prev_acc": 0.027116,
+        "problem_difficulty": 0.090743,
+        "skill_difficulty": 0.02617,
+        "is_skill_unmapped": 0.00184,
+        "log_response_time": 0.0134,
+        "is_rapid_guess": 0.003632
+      }
+    }
+  },
+  "figures": [
+    "reports/figures/baseline_confusion_matrices.png",
+    "reports/figures/baseline_feature_importance.png"
+  ]
+}

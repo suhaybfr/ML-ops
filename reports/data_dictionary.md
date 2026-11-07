@@ -34,3 +34,12 @@
 | `is_rapid_guess` | Binary | Engagement | 1 if ms_first_response < 3000 ms, else 0 |
 | `correct` | Binary | Target | 1 = Correct response, 0 = Incorrect |
 
+---
+
+## Modelling Feature Selection & Leakage Guardrails
+- **11 Active Predictor Features (`src/features.py` -> `ENGINEERED_FEATURES`):**
+  `log_opportunity`, `attempt_count`, `hint_count`, `bottom_hint`, `hint_ratio`, `user_prev_acc`, `problem_difficulty`, `skill_difficulty`, `is_skill_unmapped`, `log_response_time`, `is_rapid_guess`.
+- **Excluded Leaky Column:** `first_try_correct` is retained in `engineered_features.csv` for descriptive analysis only and **strictly excluded** from all training/evaluation stages (`src/prepare.py`, `src/features.py`) because its definition incorporates `correct == 1`.
+- **Metadata Identifiers Retained for Subgroup Slice Checks:** `user_id`, `problem_id`, `skill_name`, and `opportunity` are retained in `data/processed/train.csv` and `test.csv` for slice-level model-risk diagnostics (`mapped` vs `unmapped` skills, cold-start `opportunity == 1` vs practiced) and excluded from `X` via `select_xy()`.
+
+

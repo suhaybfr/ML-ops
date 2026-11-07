@@ -1,11 +1,24 @@
-"""Model comparison across several train/test splits and k-fold CV.
+"""Stage 4 (experiments): Multi-split hold-out and stratified k-fold CV suite.
 
-Trains logistic regression, SVM and random forest on 80/20, 70/30 and 60/40
-splits plus 5-fold cross-validation, writes the result tables to reports/ and
-logs everything to DAGsHub MLflow.
+Compares Logistic Regression, RBF-kernel SVM, and Random Forest across 80/20,
+70/30, and 60/40 stratified splits plus 5-fold stratified cross-validation on
+the 11 engineered features. Persists Git-tracked CSV validation tables
+(``reports/experiment_results.csv``, ``reports/cv_results.csv``) and figures,
+and logs tagged parent + nested child runs with attached validation artifacts
+to MLflow.
 """
 
+from __future__ import annotations
+
 import os
+import sys
+import tempfile
+from pathlib import Path
+
+os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
+
+if not __package__:
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import matplotlib
 
@@ -17,62 +30,68 @@ import pandas as pd
 import yaml
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import (
-    PrecisionRecallDisplay,
-    RocCurveDisplay,
-)
+from sklearn.metrics import PrecisionRecallDisplay, RocCurveDisplay
 from sklearn.model_selection import StratifiedKFold, train_test_split
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.svm import SVC
 
-from evaluation import classification_metrics, positive_scores
-from utils import setup_mlflow
-
-EXPERIMENT_NAME = "student_performance_baseline"
-METRIC_NAMES = ["accuracy", "precision", "recall", "f1_score", "roc_auc", "pr_auc", "r2_score", "mcc"]
-
-
-def load_params():
-    with open("params.yaml", "r") as f:
-        return yaml.safe_load(f)
+from src.evaluation import (
+    METRIC_NAMES,
+    classification_metrics,
+    positive_scores,
+    save_validation_json,
+)
+from src.features import ENGINEERED_FEATURES, select_xy
+from src.utils import DEFAULT_EXPERIMENT, setup_mlflow, standard_tags
 
 
-def build_models(random_state):
-    """Return freshly initialised candidate estimators.
+def load_params() -> dict:
+    with open("params.yaml", "r", encoding="utf-8") as f:
+        return yaml.safe_load(f)["experiments"]
 
-    A new dictionary is built per split so no fitted state leaks between runs.
-    """
+
+def build_models(random_state: int) -> dict:
+    """Return freshly initialized candidate estimators per split/fold."""
     return {
         "logistic_regression": make_pipeline(
-            StandardScaler(), LogisticRegression(max_iter=1000, random_state=random_state)
+            StandardScaler(),
+            LogisticRegression(max_iter=1000, random_state=random_state),
         ),
         "svm_rbf": make_pipeline(
-            StandardScaler(), SVC(kernel="rbf", C=1.0, gamma="scale", random_state=random_state)
+            StandardScaler(),
+            SVC(kernel="rbf", C=1.0, gamma="scale", random_state=random_state),
         ),
         "random_forest": RandomForestClassifier(
-            n_estimators=100, max_depth=10, random_state=random_state, n_jobs=-1
+            n_estimators=100,
+            max_depth=10,
+            random_state=random_state,
+            n_jobs=-1,
         ),
     }
 
 
-def load_pooled_data():
-    train_df = pd.read_csv(os.path.join("data", "processed", "train.csv"))
-    test_df = pd.read_csv(os.path.join("data", "processed", "test.csv"))
+def load_pooled_data() -> tuple[pd.DataFrame, pd.Series, list[str]]:
+    train_df = pd.read_csv(Path("data") / "processed" / "train.csv")
+    test_df = pd.read_csv(Path("data") / "processed" / "test.csv")
     pooled = pd.concat([train_df, test_df], ignore_index=True)
-    feature_cols = [c for c in pooled.columns if c != "correct"]
-    return pooled[feature_cols], pooled["correct"], feature_cols
+    X, y = select_xy(pooled)
+    return X, y, list(ENGINEERED_FEATURES)
 
 
-def cap(X, y, sample_size, random_state):
+def stratified_cap(
+    X: pd.DataFrame, y: pd.Series, sample_size: int | None, random_state: int
+) -> tuple[pd.DataFrame, pd.Series]:
     if sample_size and sample_size < len(X):
-        X = X.sample(n=sample_size, random_state=random_state)
-        y = y.loc[X.index]
-    return X, y
+        X_sub, _, y_sub, _ = train_test_split(
+            X, y, train_size=int(sample_size), random_state=random_state, stratify=y
+        )
+        return X_sub.reset_index(drop=True), y_sub.reset_index(drop=True)
+    return X.reset_index(drop=True), y.reset_index(drop=True)
 
 
-def save_curves(curve_data, out_dir):
-    os.makedirs(out_dir, exist_ok=True)
+def save_curves(curve_data: dict, out_dir: Path) -> Path:
+    out_dir.mkdir(parents=True, exist_ok=True)
     fig, axes = plt.subplots(1, 2, figsize=(11, 4.5))
     for name, (y_true, y_score) in curve_data.items():
         RocCurveDisplay.from_predictions(y_true, y_score, name=name, ax=axes[0])
@@ -80,14 +99,14 @@ def save_curves(curve_data, out_dir):
     axes[0].set_title("ROC curves (80/20 split)")
     axes[1].set_title("Precision-Recall curves (80/20 split)")
     fig.tight_layout()
-    roc_pr_path = os.path.join(out_dir, "classification_roc_pr.png")
+    roc_pr_path = out_dir / "classification_roc_pr.png"
     fig.savefig(roc_pr_path, dpi=150)
     plt.close(fig)
     return roc_pr_path
 
 
-def save_f1_chart(results_df, out_dir):
-    os.makedirs(out_dir, exist_ok=True)
+def save_f1_chart(results_df: pd.DataFrame, out_dir: Path) -> Path:
+    out_dir.mkdir(parents=True, exist_ok=True)
     pivot = results_df.pivot(index="test_size", columns="model", values="f1_score")
     ax = pivot.plot(kind="bar", figsize=(8, 4.5), rot=0)
     ax.set_xlabel("Test split fraction")
@@ -97,21 +116,27 @@ def save_f1_chart(results_df, out_dir):
     ax.legend(loc="lower right")
     fig = ax.get_figure()
     fig.tight_layout()
-    f1_path = os.path.join(out_dir, "f1_by_split.png")
+    f1_path = out_dir / "f1_by_split.png"
     fig.savefig(f1_path, dpi=150)
     plt.close(fig)
     return f1_path
 
 
-def run_experiments():
-    params = load_params()
-    exp = params["experiments"]
-    random_state = exp["random_state"]
-    sample_size = exp["sample_size"]
-    test_sizes = exp["test_sizes"]
-    folds = exp["cv_folds"]
+def _log_child_validation_json(payload: dict, filename: str) -> None:
+    with tempfile.TemporaryDirectory(prefix="mlflow_val_") as tmp:
+        p = Path(tmp) / filename
+        save_validation_json(payload, p)
+        mlflow.log_artifact(str(p), artifact_path="validation")
 
-    setup_mlflow(experiment_name=EXPERIMENT_NAME)
+
+def run_experiments() -> tuple[pd.DataFrame, pd.DataFrame]:
+    exp = load_params()
+    random_state = int(exp["random_state"])
+    sample_size = int(exp["sample_size"])
+    test_sizes = [float(t) for t in exp["test_sizes"]]
+    folds = int(exp["cv_folds"])
+
+    setup_mlflow(experiment_name=DEFAULT_EXPERIMENT)
 
     X_all, y_all, feature_cols = load_pooled_data()
     print(f"[Experiments] Pooled modelling frame: {X_all.shape}")
@@ -120,7 +145,7 @@ def run_experiments():
     cv_records = []
     curve_data = {}
 
-    with mlflow.start_run(run_name="svm_validation_suite") as parent:
+    with mlflow.start_run(run_name="svm_validation_suite_v2") as parent:
         mlflow.log_params(
             {
                 "test_sizes": ",".join(str(t) for t in test_sizes),
@@ -131,15 +156,30 @@ def run_experiments():
                 "features": ",".join(feature_cols),
             }
         )
-        mlflow.set_tags({"suite": "split_and_cv_validation", "task": "student_correctness"})
+        mlflow.set_tags(
+            standard_tags(
+                stage="experiments",
+                model="multi_model_suite",
+                feature_set="engineered_11",
+                kind="validation_suite_parent",
+                extra={"suite": "split_and_cv_validation"},
+            )
+        )
 
-        # ---- Hold-out study over multiple train/test ratios ----
+        # ---- 1. Hold-out study over multiple train/test ratios ----
         for test_size in test_sizes:
             X_tr, X_te, y_tr, y_te = train_test_split(
-                X_all, y_all, test_size=test_size, random_state=random_state, stratify=y_all
+                X_all,
+                y_all,
+                test_size=test_size,
+                random_state=random_state,
+                stratify=y_all,
             )
-            X_tr, y_tr = cap(X_tr, y_tr, sample_size, random_state)
-            print(f"[Experiments] Split test_size={test_size}: train={len(X_tr)} test={len(X_te)}")
+            X_tr, y_tr = stratified_cap(X_tr, y_tr, sample_size, random_state)
+            print(
+                f"[Experiments] Split test_size={test_size}: "
+                f"train={len(X_tr):,} test={len(X_te):,}"
+            )
 
             for name, model in build_models(random_state).items():
                 model.fit(X_tr, y_tr)
@@ -150,36 +190,51 @@ def run_experiments():
                 row = {
                     "test_size": test_size,
                     "model": name,
-                    "train_samples": len(X_tr),
-                    "test_samples": len(X_te),
+                    "train_samples": int(len(X_tr)),
+                    "test_samples": int(len(X_te)),
+                    **metrics,
                 }
-                row.update(metrics)
                 results.append(row)
 
-                with mlflow.start_run(run_name=f"{name}_test{int(round(test_size * 100))}", nested=True):
+                run_label = f"{name}_test{int(round(test_size * 100))}"
+                with mlflow.start_run(run_name=run_label, nested=True):
                     mlflow.log_params(
                         {
                             "model": name,
                             "test_size": test_size,
                             "train_samples": len(X_tr),
                             "test_samples": len(X_te),
+                            "feature_count": len(feature_cols),
                         }
                     )
                     mlflow.log_metrics(metrics)
-                    mlflow.set_tags({"kind": "holdout", "model": name, "test_size": str(test_size)})
+                    mlflow.set_tags(
+                        standard_tags(
+                            stage="experiments",
+                            model=name,
+                            feature_set="engineered_11",
+                            kind="holdout",
+                            extra={
+                                "suite": "split_and_cv_validation",
+                                "test_size": str(test_size),
+                                "validation_file": "reports/experiment_results.csv",
+                            },
+                        )
+                    )
+                    _log_child_validation_json(row, f"{run_label}_metrics.json")
 
                 if test_size == test_sizes[0]:
                     curve_data[name] = (y_te, y_score)
 
                 print(
                     f"    {name:<20} f1={metrics['f1_score']:.4f} "
-                    f"roc_auc={metrics['roc_auc']:.4f} r2={metrics['r2_score']:.4f}"
+                    f"roc_auc={metrics['roc_auc']:.4f} mcc={metrics['mcc']:.4f}"
                 )
 
-        # ---- Stratified k-fold cross-validation ----
-        X_cv, y_cv = cap(X_all, y_all, sample_size, random_state)
+        # ---- 2. Stratified k-fold cross-validation ----
+        X_cv, y_cv = stratified_cap(X_all, y_all, sample_size, random_state)
         skf = StratifiedKFold(n_splits=folds, shuffle=True, random_state=random_state)
-        for name, _ in build_models(random_state).items():
+        for name in build_models(random_state):
             fold_metrics = {m: [] for m in METRIC_NAMES}
             for train_idx, val_idx in skf.split(X_cv, y_cv):
                 model = build_models(random_state)[name]
@@ -191,40 +246,80 @@ def run_experiments():
                 for m, v in classification_metrics(y_val, y_pred, y_score).items():
                     fold_metrics[m].append(v)
 
-            record = {"model": name, "folds": folds, "samples": len(X_cv)}
+            record = {"model": name, "folds": folds, "samples": int(len(X_cv))}
             for m in METRIC_NAMES:
                 record[m] = float(np.mean(fold_metrics[m]))
                 record[f"{m}_std"] = float(np.std(fold_metrics[m]))
             cv_records.append(record)
 
-            with mlflow.start_run(run_name=f"cv{folds}_{name}", nested=True):
-                mlflow.log_params({"model": name, "cv_folds": folds, "samples": len(X_cv)})
+            cv_label = f"cv{folds}_{name}"
+            with mlflow.start_run(run_name=cv_label, nested=True):
+                mlflow.log_params(
+                    {
+                        "model": name,
+                        "cv_folds": folds,
+                        "samples": len(X_cv),
+                        "feature_count": len(feature_cols),
+                    }
+                )
                 mlflow.log_metrics({m: record[m] for m in METRIC_NAMES})
                 mlflow.log_metrics({f"{m}_std": record[f"{m}_std"] for m in METRIC_NAMES})
-                mlflow.set_tags({"kind": "cross_validation", "model": name})
+                mlflow.set_tags(
+                    standard_tags(
+                        stage="experiments",
+                        model=name,
+                        feature_set="engineered_11",
+                        kind="cross_validation",
+                        extra={
+                            "suite": "split_and_cv_validation",
+                            "validation_file": "reports/cv_results.csv",
+                        },
+                    )
+                )
+                _log_child_validation_json(record, f"{cv_label}_metrics.json")
 
             print(
                 f"[CV] {name:<20} f1={record['f1_score']:.4f} "
                 f"(+/-{record['f1_score_std']:.4f}) roc_auc={record['roc_auc']:.4f}"
             )
 
-        # ---- Persist results and figures ----
-        os.makedirs("reports", exist_ok=True)
+        # ---- 3. Persist Git-tracked validation CSVs & figures ----
+        reports_dir = Path("reports")
+        reports_dir.mkdir(parents=True, exist_ok=True)
+        exp_csv_path = reports_dir / "experiment_results.csv"
+        cv_csv_path = reports_dir / "cv_results.csv"
+
         results_df = pd.DataFrame(results)
-        results_df.to_csv(os.path.join("reports", "experiment_results.csv"), index=False)
+        results_df.to_csv(exp_csv_path, index=False)
 
         cv_df = pd.DataFrame(cv_records)
-        cv_df.to_csv(os.path.join("reports", "cv_results.csv"), index=False)
+        cv_df.to_csv(cv_csv_path, index=False)
 
-        fig_dir = os.path.join("reports", "figures")
+        fig_dir = reports_dir / "figures"
         roc_pr_path = save_curves(curve_data, fig_dir)
         f1_path = save_f1_chart(results_df, fig_dir)
-        mlflow.log_artifact(roc_pr_path, artifact_path="figures")
-        mlflow.log_artifact(f1_path, artifact_path="figures")
-        mlflow.log_artifact(os.path.join("reports", "experiment_results.csv"), artifact_path="results")
-        mlflow.log_artifact(os.path.join("reports", "cv_results.csv"), artifact_path="results")
 
-        print(f"[Experiments] Parent run: {parent.info.run_id}")
+        # Log best summary metrics on parent run too so DAGsHub table shows parent scores
+        rf_20 = results_df[
+            (results_df["test_size"] == test_sizes[0]) & (results_df["model"] == "random_forest")
+        ].iloc[0]
+        svm_20 = results_df[
+            (results_df["test_size"] == test_sizes[0]) & (results_df["model"] == "svm_rbf")
+        ].iloc[0]
+        mlflow.log_metrics(
+            {
+                "best_rf_f1_80_20": float(rf_20["f1_score"]),
+                "best_rf_roc_auc_80_20": float(rf_20["roc_auc"]),
+                "svm_f1_80_20": float(svm_20["f1_score"]),
+                "svm_roc_auc_80_20": float(svm_20["roc_auc"]),
+            }
+        )
+        mlflow.log_artifact(str(roc_pr_path), artifact_path="figures")
+        mlflow.log_artifact(str(f1_path), artifact_path="figures")
+        mlflow.log_artifact(str(exp_csv_path), artifact_path="validation")
+        mlflow.log_artifact(str(cv_csv_path), artifact_path="validation")
+
+        print(f"[Experiments] Parent run logged: {parent.info.run_id}")
 
     return results_df, cv_df
 

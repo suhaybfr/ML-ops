@@ -2,16 +2,20 @@ prepare:
   test_size: 0.2
   random_state: 42
   sample_size: 100000
+  max_attempt_count: 50
 
 train:
-  model_type: "RandomForest"
-  n_estimators: 100
-  max_depth: 10
   random_state: 42
+  logreg:
+    C: 1.0
+    max_iter: 1000
+    class_weight: "balanced"
+  random_forest:
+    n_estimators: 100
+    max_depth: 10
 
-# Kernel SVM added after the Random Forest baseline (teacher-requested model).
-# The processed train split is subsampled because kernel SVM cost grows
-# quadratically with the number of training rows.
+# Kernel SVM stage (teacher-requested model). Training set is capped at
+# sample_size because exact RBF-kernel SVM scales quadratically with rows.
 svm:
   kernel: "rbf"
   C: 1.0
@@ -19,8 +23,7 @@ svm:
   sample_size: 30000
   random_state: 42
 
-# Split-robustness study: the same models are trained on several train/test
-# ratios so results are not tied to a single partition.
+# Split-robustness and stratified k-fold cross-validation suite.
 experiments:
   random_state: 42
   sample_size: 30000

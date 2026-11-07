@@ -9,17 +9,20 @@ order to decide when to give a hint or move on.
 
 ## What is trained
 
-| Model | Role | Configuration |
-|---|---|---|
-| Random Forest | Baseline (already in the pipeline) | 100 trees, `max_depth=10` |
-| Logistic Regression | Simple linear reference | `StandardScaler`, `max_iter=1000` |
-| SVM (RBF kernel) | The model the teacher asked for | `StandardScaler`, `C=1.0`, `gamma="scale"` |
+| Model | Role | Artifact | Configuration |
+|---|---|---|---|
+| Random Forest | Accepted baseline / Phase 2 champion | `models/baseline_model.pkl` | 100 trees, `max_depth=10` |
+| Logistic Regression | Simple linear reference | `models/logreg_baseline.pkl` | `StandardScaler`, `max_iter=1000` |
+| SVM (RBF kernel) | The model the teacher asked for | `models/svm_model.pkl` | `StandardScaler`, `C=1.0`, `gamma="scale"` |
 
 The SVM and logistic regression are wrapped in a `StandardScaler` pipeline
-because both are distance/margin based and are sensitive to feature scale. The
-features are the same six used by the baseline: `attempt_count`,
-`ms_first_response`, `hint_count`, `hint_total`, `overlap_time` and
-`opportunity`.
+because both are distance/margin based and are sensitive to feature scale. All
+three models share the exact 11 leakage-free engineered features defined in
+`src/features.py` (`ENGINEERED_FEATURES` from `data/processed/engineered_features.csv`):
+`log_opportunity`, `attempt_count`, `hint_count`, `bottom_hint`, `hint_ratio`,
+`user_prev_acc`, `problem_difficulty`, `skill_difficulty`, `is_skill_unmapped`,
+`log_response_time`, and `is_rapid_guess` (`first_try_correct` is excluded to
+avoid target leakage).
 
 The SVM is intentionally left at sane defaults rather than heavily tuned. Kernel
 SVM training cost grows with the number of rows, so the training split is capped
@@ -61,27 +64,34 @@ between the continuous score and the label. It is computed in
 
 ## Results
 
-### Hold-out evaluation (training capped at 30,000 rows)
+### Hold-out evaluation (`src/experiments.py`, training capped at 30,000 rows)
 
 | Split | Model | Accuracy | Precision | Recall | F1 | ROC-AUC | PR-AUC | R² | MCC |
 |---|---|---|---|---|---|---|---|---|---|
-| 80/20 | Logistic Regression | 0.9062 | 0.8815 | 0.9961 | 0.9353 | 0.9279 | 0.9239 | 0.6418 | 0.7861 |
-| 80/20 | **SVM (RBF)** | 0.9184 | 0.8952 | 0.9968 | 0.9433 | 0.9017 | 0.9022 | 0.4600 | 0.8140 |
-| 80/20 | **Random Forest** | 0.9419 | 0.9241 | 0.9965 | 0.9589 | 0.9783 | 0.9885 | 0.7946 | 0.8672 |
-| 70/30 | Logistic Regression | 0.8863 | 0.8583 | 0.9978 | 0.9228 | 0.9346 | 0.9521 | 0.6162 | 0.7416 |
-| 70/30 | **SVM (RBF)** | 0.9002 | 0.8727 | 0.9992 | 0.9317 | 0.9380 | 0.9227 | 0.4626 | 0.7737 |
-| 70/30 | **Random Forest** | 0.9409 | 0.9225 | 0.9969 | 0.9583 | 0.9795 | 0.9892 | 0.7955 | 0.8650 |
-| 60/40 | Logistic Regression | 0.8860 | 0.8581 | 0.9975 | 0.9226 | 0.9270 | 0.9332 | 0.6150 | 0.7406 |
-| 60/40 | **SVM (RBF)** | 0.9168 | 0.8931 | 0.9972 | 0.9423 | 0.9224 | 0.9146 | 0.4505 | 0.8107 |
-| 60/40 | **Random Forest** | 0.9411 | 0.9231 | 0.9965 | 0.9584 | 0.9792 | 0.9888 | 0.7962 | 0.8654 |
+| 80/20 | Logistic Regression | 0.9085 | 0.8994 | 0.9742 | 0.9353 | 0.9338 | 0.9489 | 0.6647 | 0.7869 |
+| 80/20 | **SVM (RBF)** | 0.9259 | 0.9080 | 0.9912 | 0.9478 | 0.9259 | 0.9137 | 0.5176 | 0.8300 |
+| 80/20 | **Random Forest** | **0.9435** | **0.9281** | **0.9939** | **0.9598** | **0.9742** | **0.9859** | **0.7881** | **0.8707** |
+| 70/30 | Logistic Regression | 0.9099 | 0.8994 | 0.9767 | 0.9364 | 0.9356 | 0.9522 | 0.6688 | 0.7906 |
+| 70/30 | **SVM (RBF)** | 0.9277 | 0.9095 | 0.9923 | 0.9491 | 0.9281 | 0.9165 | 0.5261 | 0.8344 |
+| 70/30 | **Random Forest** | **0.9444** | **0.9293** | **0.9937** | **0.9604** | **0.9744** | **0.9859** | **0.7917** | **0.8727** |
+| 60/40 | Logistic Regression | 0.9117 | 0.9012 | 0.9771 | 0.9376 | 0.9341 | 0.9493 | 0.6710 | 0.7948 |
+| 60/40 | **SVM (RBF)** | 0.9276 | 0.9083 | 0.9936 | 0.9491 | 0.9305 | 0.9191 | 0.5222 | 0.8345 |
+| 60/40 | **Random Forest** | **0.9436** | **0.9275** | **0.9947** | **0.9599** | **0.9741** | **0.9857** | **0.7902** | **0.8710** |
 
 ### Stratified 5-fold cross-validation (30,000 rows)
 
 | Model | Accuracy | F1 | ROC-AUC | R² | MCC |
 |---|---|---|---|---|---|
-| Logistic Regression | 0.8791 ± 0.0128 | 0.9182 ± 0.0080 | 0.9316 ± 0.0055 | 0.5933 ± 0.0285 | 0.7257 ± 0.0292 |
-| SVM (RBF) | 0.8864 ± 0.0164 | 0.9229 ± 0.0104 | 0.9341 ± 0.0167 | 0.4643 ± 0.0272 | 0.7425 ± 0.0371 |
-| Random Forest | 0.9405 ± 0.0019 | 0.9579 ± 0.0013 | 0.9789 ± 0.0007 | 0.7950 ± 0.0043 | 0.8643 ± 0.0043 |
+| Logistic Regression | 0.9118 ± 0.0029 | 0.9378 ± 0.0021 | 0.9375 ± 0.0031 | 0.6752 ± 0.0111 | 0.7953 ± 0.0072 |
+| SVM (RBF) | 0.9277 ± 0.0021 | 0.9491 ± 0.0014 | 0.9291 ± 0.0028 | 0.5404 ± 0.0095 | 0.8346 ± 0.0049 |
+| **Random Forest** | **0.9453 ± 0.0022** | **0.9611 ± 0.0016** | **0.9759 ± 0.0018** | **0.7983 ± 0.0078** | **0.8749 ± 0.0052** |
+
+### Full-split baselines (`src/train.py`, 80,000 train / 20,000 test)
+
+| Model | Artifact | Accuracy | Precision | Recall | F1 | Macro-F1 | ROC-AUC | PR-AUC | R² | MCC | Brier |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| Random Forest | `models/baseline_model.pkl` | **0.9468** | **0.9305** | **0.9960** | **0.9621** | **0.9362** | **0.9773** | **0.9876** | **0.8022** | **0.8785** | **0.0434** |
+| Logistic Regression (`balanced`) | `models/logreg_baseline.pkl` | 0.8917 | 0.9188 | 0.9221 | 0.9204 | 0.8754 | 0.9404 | 0.9614 | 0.6435 | 0.7509 | 0.0821 |
 
 ### Standalone SVM stage (`src/train_svm.py`)
 
@@ -90,18 +100,19 @@ from the DVC `prepare` stage:
 
 | Accuracy | Precision | Recall | F1 | ROC-AUC | PR-AUC | R² | MCC |
 |---|---|---|---|---|---|---|---|
-| 0.8857 | 0.8570 | 0.9988 | 0.9225 | 0.9288 | 0.9136 | 0.4353 | 0.7406 |
+| 0.9288 | 0.9107 | 0.9924 | 0.9498 | 0.9313 | 0.9183 | 0.5196 | 0.8369 |
 
 ## Reading the results
 
-* The Random Forest is the strongest model on every split and is very stable
-  under cross-validation (F1 standard deviation of 0.0013). It remains the
-  accepted benchmark.
-* The SVM is a clear improvement over logistic regression on F1 and MCC. Across
-  the three splits its F1 moves by about 1.2 points, while the Random Forest
-  moves by only 0.07 points, so the forest is the more stable model. The SVM
-  trails the forest mainly on threshold-independent ranking (ROC-AUC, PR-AUC)
-  and on R².
+* The Random Forest is the strongest model on every split, achieves well-calibrated
+  probabilities (`Brier = 0.0434`), and is very stable under cross-validation
+  (F1 standard deviation of `0.0016`). It remains the accepted benchmark and Phase 2
+  champion model (`models/baseline_model.pkl`).
+* Using the cleaned 11-feature matrix boosted the standalone SVM from `0.7406` MCC
+  (on raw uncleaned timers) to `0.8369` MCC. Across the three splits its F1 moves
+  by only `0.13` points (`0.9478`–`0.9491`), beating logistic regression on accuracy,
+  precision, F1 and MCC, while trailing the Random Forest on threshold-independent
+  ranking (ROC-AUC, PR-AUC) and R².
 
 ### How far behind is the SVM?
 
@@ -109,18 +120,18 @@ Difference against the Random Forest, in percentage points (negative = worse):
 
 | Metric | 80/20 hold-out | Stratified 5-fold CV |
 |---|---|---|
-| Accuracy | −2.35 | −5.41 |
-| Precision | −2.90 | −6.42 |
-| Recall | +0.04 | +0.21 |
-| F1 | −1.57 | −3.50 |
-| ROC-AUC | −7.66 | −4.47 |
-| PR-AUC | −8.63 | −6.39 |
-| R² | −33.46 | −33.06 |
-| MCC | −5.32 | −12.17 |
+| Accuracy | −1.76 | −1.76 |
+| Precision | −2.00 | −2.11 |
+| Recall | −0.26 | −0.13 |
+| F1 | −1.20 | −1.20 |
+| ROC-AUC | −4.83 | −4.68 |
+| PR-AUC | −7.22 | −7.03 |
+| R² | −27.05 | −25.78 |
+| MCC | −4.07 | −4.03 |
 
-The SVM only wins on recall, and by a negligible amount. Against logistic
-regression the SVM is ahead on accuracy (+1.22), precision (+1.37), F1 (+0.80)
-and MCC (+2.79) but behind on ROC-AUC (−2.62) on the 80/20 split.
+Against logistic regression on the 80/20 split, the SVM is ahead on accuracy
+(+1.74), precision (+0.87), F1 (+1.25) and MCC (+4.32), while slightly behind on
+ROC-AUC (−0.79).
 * Every model has a very high recall and a much lower precision. The data is
   imbalanced (about 68% of attempts are correct), and at the default threshold
   the models lean towards predicting "correct". Accuracy and F1 are therefore

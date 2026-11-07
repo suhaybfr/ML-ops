@@ -14,29 +14,33 @@ This report covers the modelling and evaluation stage of the project. The
 predictive component estimates whether a student's problem attempt is correct,
 which is the signal the digital literacy tutor uses to decide when to intervene.
 
-The Random Forest baseline was joined by two comparison models, including the
-RBF-kernel SVM requested for the project, and the models were evaluated on
-several train/test splits and with stratified cross-validation instead of a
-single split. The Random Forest remains the strongest model: on the 80/20 split
-it reaches **F1 0.9589** and **ROC-AUC 0.9783**, and it is the most stable model
-under 5-fold cross-validation (F1 standard deviation 0.0013). The SVM improves
-clearly over logistic regression (F1 0.9433 vs 0.9353 on the same split) and is
-robust across splits, but does not overtake the Random Forest.
+The Random Forest baseline (`src/train.py`, 80,000 train / 20,000 test) reaches
+**Accuracy 0.9468**, **F1 0.9621**, **ROC-AUC 0.9773**, and **MCC 0.8785** on the
+unified 11 engineered features (`src/features.py`). In the head-to-head comparison
+suite (`src/experiments.py`, 30,000-row training cap for fair kernel-SVM comparison),
+the Random Forest remains the strongest model: on the 80/20 split it reaches
+**F1 0.9598** and **ROC-AUC 0.9742**, and under 5-fold cross-validation it achieves
+**F1 0.9611 ± 0.0016**. The RBF-kernel SVM improves clearly over logistic regression
+(F1 0.9478 vs 0.9353 on 80/20; MCC 0.8300 vs 0.7869) and is stable across splits,
+but does not overtake the Random Forest.
 
 ---
 
 ## 2. Models compared
 
-| Model | Configuration | Purpose |
-|---|---|---|
-| Random Forest | 100 trees, `max_depth=10` | Baseline benchmark |
-| Logistic Regression | `StandardScaler`, `max_iter=1000` | Simple linear reference |
-| SVM (RBF kernel) | `StandardScaler`, `C=1.0`, `gamma="scale"` | Model requested by the teacher |
+| Model | Configuration | Artifact | Purpose |
+|---|---|---|---|
+| Random Forest | 100 trees, `max_depth=10` | `models/baseline_model.pkl` | Accepted baseline / Phase 2 champion |
+| Logistic Regression | `StandardScaler`, `max_iter=1000` | `models/logreg_baseline.pkl` | Linear reference baseline |
+| SVM (RBF kernel) | `StandardScaler`, `C=1.0`, `gamma="scale"` | `models/svm_model.pkl` | Non-linear margin model requested by the teacher |
 
-Features: `attempt_count`, `ms_first_response`, `hint_count`, `hint_total`,
-`overlap_time`, `opportunity`. The SVM is kept close to default settings rather
-than exhaustively tuned; training is capped at 30,000 rows because kernel SVM
-cost grows with the number of rows, while the test set stays complete.
+Features (`ENGINEERED_FEATURES` in `src/features.py`, sourced from
+`data/processed/engineered_features.csv`): `log_opportunity`, `attempt_count`,
+`hint_count`, `bottom_hint`, `hint_ratio`, `user_prev_acc`, `problem_difficulty`,
+`skill_difficulty`, `is_skill_unmapped`, `log_response_time`, `is_rapid_guess`
+(`first_try_correct` is excluded to prevent target leakage). Kernel SVM training
+is capped at 30,000 rows (`svm.sample_size`) for computational tractability, while
+held-out test splits stay complete.
 
 ---
 
@@ -46,8 +50,10 @@ cost grows with the number of rows, while the test set stays complete.
    preserve the class ratio (`src/experiments.py`).
 2. **Stratified 5-fold cross-validation** on 30,000 rows, reported as mean and
    standard deviation.
-3. **Curve and error inspection**, i.e. ROC curves, precision-recall curves and a
-   confusion matrix (`reports/figures/`).
+3. **Curve, calibration, and subgroup slice inspection**, i.e. ROC curves,
+   precision-recall curves, confusion matrices (`reports/figures/`), Brier
+   calibration, struggling-student (class 0) recall, and slice diagnostics
+   (`reports/baseline_metrics.json`, `reports/svm_metrics.json`).
 
 Metrics: Accuracy, Precision, Recall, F1, ROC-AUC, PR-AUC, R² and MCC. The full
 metric tables and the R² note are in `docs/MODEL_VALIDATION.md`.
@@ -56,40 +62,52 @@ metric tables and the R² note are in `docs/MODEL_VALIDATION.md`.
 
 ## 4. Headline results
 
-**Hold-out, 80/20 split (training capped at 30,000 rows):**
+**Hold-out, 80/20 split (`src/experiments.py`, training capped at 30,000 rows):**
 
-| Model | Accuracy | Precision | Recall | F1 | ROC-AUC | R² |
-|---|---|---|---|---|---|---|
-| Logistic Regression | 0.9062 | 0.8815 | 0.9961 | 0.9353 | 0.9279 | 0.6418 |
-| SVM (RBF) | 0.9184 | 0.8952 | 0.9968 | 0.9433 | 0.9017 | 0.4600 |
-| **Random Forest** | **0.9419** | **0.9241** | 0.9965 | **0.9589** | **0.9783** | **0.7946** |
+| Model | Accuracy | Precision | Recall | F1 | ROC-AUC | PR-AUC | R² | MCC |
+|---|---|---|---|---|---|---|---|---|
+| Logistic Regression | 0.9085 | 0.8994 | 0.9742 | 0.9353 | 0.9338 | 0.9489 | 0.6647 | 0.7869 |
+| SVM (RBF) | 0.9259 | 0.9080 | 0.9912 | 0.9478 | 0.9259 | 0.9137 | 0.5176 | 0.8300 |
+| **Random Forest** | **0.9435** | **0.9281** | **0.9939** | **0.9598** | **0.9742** | **0.9859** | **0.7881** | **0.8707** |
 
 **Stratified 5-fold cross-validation (30,000 rows):**
 
 | Model | Accuracy | F1 | ROC-AUC | MCC |
 |---|---|---|---|---|
-| Logistic Regression | 0.8791 ± 0.0128 | 0.9182 ± 0.0080 | 0.9316 ± 0.0055 | 0.7257 ± 0.0292 |
-| SVM (RBF) | 0.8864 ± 0.0164 | 0.9229 ± 0.0104 | 0.9341 ± 0.0167 | 0.7425 ± 0.0371 |
-| **Random Forest** | **0.9405 ± 0.0019** | **0.9579 ± 0.0013** | **0.9789 ± 0.0007** | **0.8643 ± 0.0043** |
+| Logistic Regression | 0.9118 ± 0.0029 | 0.9378 ± 0.0021 | 0.9375 ± 0.0031 | 0.7953 ± 0.0072 |
+| SVM (RBF) | 0.9277 ± 0.0021 | 0.9491 ± 0.0014 | 0.9291 ± 0.0028 | 0.8346 ± 0.0049 |
+| **Random Forest** | **0.9453 ± 0.0022** | **0.9611 ± 0.0016** | **0.9759 ± 0.0018** | **0.8749 ± 0.0052** |
 
-**Standalone SVM stage** (`src/train_svm.py`, 20,000-row held-out test set):
-Accuracy 0.8857, Precision 0.8570, Recall 0.9988, F1 0.9225, ROC-AUC 0.9288,
-PR-AUC 0.9136, R² 0.4353, MCC 0.7406.
+**Full-split baselines (`src/train.py`, 80,000 train / 20,000 test):**
+- **Random Forest (`models/baseline_model.pkl`):** Accuracy 0.9468, Precision 0.9305,
+  Recall 0.9960, F1 0.9621, Macro-F1 0.9362, ROC-AUC 0.9773, PR-AUC 0.9876,
+  R² 0.8022, MCC 0.8785, Brier score 0.0434, struggling-student (class 0) recall 0.8423.
+- **Logistic Regression (`models/logreg_baseline.pkl`, `class_weight="balanced"`):**
+  Accuracy 0.8917, Precision 0.9188, Recall 0.9221, F1 0.9204, Macro-F1 0.8754,
+  ROC-AUC 0.9404, PR-AUC 0.9614, R² 0.6435, MCC 0.7509, Brier score 0.0821.
 
-The full result tables are written to `reports/experiment_results.csv` and
+**Standalone SVM stage** (`src/train_svm.py`, 30,000 train / 20,000 held-out test set):
+Accuracy 0.9288, Precision 0.9107, Recall 0.9924, F1 0.9498, Macro-F1 0.9135,
+ROC-AUC 0.9313, PR-AUC 0.9183, R² 0.5196, MCC 0.8369.
+
+The full result tables and JSON validation artifacts are tracked in Git under
+`reports/baseline_metrics.csv`, `reports/baseline_metrics.json`,
+`reports/svm_metrics.json`, `reports/experiment_results.csv`, and
 `reports/cv_results.csv`.
 
 ---
 
 ## 5. Interpretation and limitations
 
-- **Random Forest stays the benchmark.** It wins on every split and shows very
-  low cross-validation variance, so it is the model the tutor should use.
-- **The SVM is a solid, robust alternative.** It beats logistic regression on
-  accuracy, precision, F1 and MCC, and its F1 varies by about 1.2 points across
-  the three splits. It still trails the Random Forest on ranking quality
-  (ROC-AUC 7.7 points lower, PR-AUC 8.6 points lower on the 80/20 split) and is
-  less stable than the forest, whose F1 moves by only 0.07 points.
+- **Random Forest stays the benchmark.** It wins on every split, achieves the
+  best probability calibration (Brier 0.0434), detects 84.2% of struggling attempts
+  with 99.0% class-0 precision, and shows very low cross-validation variance, so it
+  is the model promoted toward Phase 2 serving.
+- **The SVM improved substantially on the cleaned 11-feature matrix.** Moving from
+  raw uncleaned timers to `engineered_features.csv` boosted standalone SVM MCC from
+  0.7406 to 0.8369 (+9.6 points) and accuracy from 88.57% to 92.88%. It beats
+  logistic regression on accuracy, precision, F1 and MCC across every split, while
+  trailing the Random Forest on ranking quality (ROC-AUC ~4.8 points lower on 80/20).
 - **The classes are imbalanced.** About 68% of attempts are correct, and at the
   default threshold all models favour the "correct" class, giving very high
   recall (~0.996) with lower precision (~0.86-0.92). F1 and MCC are therefore

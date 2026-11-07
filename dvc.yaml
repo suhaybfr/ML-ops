@@ -1,40 +1,59 @@
 stages:
   prepare:
-    cmd: python src/prepare.py
+    cmd: python -m src.prepare
     deps:
-      - data/raw/skill_builder_data.csv
+      - data/processed/engineered_features.csv
       - src/prepare.py
+      - src/features.py
+      - src/evaluation.py
     params:
       - prepare.test_size
       - prepare.random_state
       - prepare.sample_size
+      - prepare.max_attempt_count
     outs:
       - data/processed/train.csv
       - data/processed/test.csv
+      - reports/prepare_summary.json:
+          cache: false
 
   train:
-    cmd: python src/train.py
+    cmd: python -m src.train
     deps:
       - data/processed/train.csv
       - data/processed/test.csv
       - src/train.py
+      - src/features.py
+      - src/evaluation.py
       - src/utils.py
     params:
-      - train.model_type
-      - train.n_estimators
-      - train.max_depth
       - train.random_state
+      - train.logreg.C
+      - train.logreg.max_iter
+      - train.logreg.class_weight
+      - train.random_forest.n_estimators
+      - train.random_forest.max_depth
     outs:
       - models/baseline_model.pkl
+      - models/logreg_baseline.pkl
+      - reports/baseline_metrics.csv:
+          cache: false
+      - reports/baseline_metrics.json:
+          cache: false
+      - reports/figures/baseline_confusion_matrices.png:
+          cache: false
+      - reports/figures/baseline_feature_importance.png:
+          cache: false
 
   train_svm:
-    cmd: python src/train_svm.py
+    cmd: python -m src.train_svm
     deps:
       - data/processed/train.csv
       - data/processed/test.csv
       - src/train_svm.py
-      - src/utils.py
+      - src/features.py
       - src/evaluation.py
+      - src/utils.py
     params:
       - svm.kernel
       - svm.C
@@ -43,20 +62,33 @@ stages:
       - svm.random_state
     outs:
       - models/svm_model.pkl
+      - reports/svm_metrics.json:
+          cache: false
+      - reports/figures/svm_roc_curve.png:
+          cache: false
+      - reports/figures/svm_confusion_matrix.png:
+          cache: false
 
   experiments:
-    cmd: python src/experiments.py
+    cmd: python -m src.experiments
     deps:
       - data/processed/train.csv
       - data/processed/test.csv
       - src/experiments.py
-      - src/utils.py
+      - src/features.py
       - src/evaluation.py
+      - src/utils.py
     params:
       - experiments.random_state
       - experiments.sample_size
       - experiments.test_sizes
       - experiments.cv_folds
     outs:
-      - reports/experiment_results.csv
-      - reports/cv_results.csv
+      - reports/experiment_results.csv:
+          cache: false
+      - reports/cv_results.csv:
+          cache: false
+      - reports/figures/classification_roc_pr.png:
+          cache: false
+      - reports/figures/f1_by_split.png:
+          cache: false

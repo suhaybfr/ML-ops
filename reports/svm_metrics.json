@@ -1,0 +1,101 @@
+{
+  "stage": "train_svm",
+  "model": "svm_rbf_holdout",
+  "artifact_path": "models/svm_model.pkl",
+  "feature_set": "engineered_11",
+  "features": [
+    "log_opportunity",
+    "attempt_count",
+    "hint_count",
+    "bottom_hint",
+    "hint_ratio",
+    "user_prev_acc",
+    "problem_difficulty",
+    "skill_difficulty",
+    "is_skill_unmapped",
+    "log_response_time",
+    "is_rapid_guess"
+  ],
+  "train_samples": 30000,
+  "test_samples": 20000,
+  "hyperparameters": {
+    "kernel": "rbf",
+    "C": 1.0,
+    "gamma": "scale",
+    "scaler": "StandardScaler",
+    "random_state": 42
+  },
+  "metrics": {
+    "accuracy": 0.92875,
+    "precision": 0.910724,
+    "recall": 0.99242,
+    "f1_score": 0.949819,
+    "roc_auc": 0.931349,
+    "pr_auc": 0.918314,
+    "r2_score": 0.519597,
+    "mcc": 0.836914
+  },
+  "risk_and_slice_diagnostics": {
+    "confusion_matrix": {
+      "tn": 5089,
+      "fp": 1322,
+      "fn": 103,
+      "tp": 13486
+    },
+    "struggling_student_class0": {
+      "precision": 0.9802,
+      "recall_specificity": 0.7938,
+      "f1_score": 0.8772,
+      "missed_intervention_rate_fpr": 0.2062
+    },
+    "macro_f1": 0.9135,
+    "slices": {
+      "mapped_skills": {
+        "samples": 17007,
+        "accuracy": 0.9209,
+        "f1_score": 0.9457,
+        "macro_f1": 0.9,
+        "roc_auc": 0.9172
+      },
+      "unmapped_skills": {
+        "samples": 2993,
+        "accuracy": 0.9733,
+        "f1_score": 0.9779,
+        "macro_f1": 0.9721,
+        "roc_auc": 0.9849
+      },
+      "normal_latency_ge_3s": {
+        "samples": 18424,
+        "accuracy": 0.9255,
+        "f1_score": 0.9487,
+        "macro_f1": 0.9062,
+        "roc_auc": 0.9214
+      },
+      "rapid_guess_lt_3s": {
+        "samples": 1576,
+        "accuracy": 0.967,
+        "f1_score": 0.9681,
+        "macro_f1": 0.967,
+        "roc_auc": 0.9945
+      },
+      "cold_start_opportunity_1": {
+        "samples": 1675,
+        "accuracy": 0.8669,
+        "f1_score": 0.8987,
+        "macro_f1": 0.8523,
+        "roc_auc": 0.8538
+      },
+      "practiced_opportunity_gt_1": {
+        "samples": 18325,
+        "accuracy": 0.9344,
+        "f1_score": 0.9541,
+        "macro_f1": 0.9196,
+        "roc_auc": 0.9382
+      }
+    }
+  },
+  "figures": [
+    "reports/figures/svm_roc_curve.png",
+    "reports/figures/svm_confusion_matrix.png"
+  ]
+}

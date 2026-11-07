@@ -1,108 +1,65 @@
 # Baseline Model and MLOps Pipeline Report
 
 **Project Title:** AI-Based Digital Learning Assistant  
-**Dataset:** ASSISTments Skill Builder Dataset (525,534 interactions)  
+**Dataset:** ASSISTments Skill Builder (`data/processed/engineered_features.csv`, 525,534 interactions)  
 **Task:** Student Correctness Prediction (Binary Classification)  
 **Tracking Platform:** DAGsHub (DVC Remote Storage & Hosted MLflow)  
+**Validation Files:** `reports/prepare_summary.json`, `reports/baseline_metrics.csv`, `reports/baseline_metrics.json`
 
 ---
 
 ## 1. Executive Summary
 
-This report documents the initial machine learning baseline and MLOps data versioning infrastructure developed for the AI-Based Digital Learning Assistant. The predictive component forecasts student learning outcomes—specifically, whether a student successfully solves a problem on their first attempt without requiring intervention.
+This report documents the unified machine learning baselines and MLOps versioning pipeline for the AI-Based Digital Learning Assistant. The predictive module estimates whether a student solves an assigned problem correctly (`correct` $\in \{0, 1\}$), providing the intervention signal for the conversational tutor.
 
-An end-to-end reproducible pipeline was established using Data Version Control (DVC) and MLflow experiment tracking on DAGsHub. The baseline Random Forest model achieved **94.06% accuracy** and an **ROC-AUC of 0.9810** on the held-out test partition.
+Both Phase 1 baseline architectures—a linear **Standardized Logistic Regression** reference (`models/logreg_baseline.pkl`) and a non-linear **Random Forest Classifier** (`models/baseline_model.pkl`)—are trained and evaluated on the versioned 11 hypothesis-driven engineered features. **Random Forest (`models/baseline_model.pkl`) is selected as the accepted baseline/champion model** heading into Phase 2 serving and registry, achieving **94.68% accuracy**, **0.9621 F1**, **0.9773 ROC-AUC**, **0.8785 MCC**, and the lowest probability calibration error (**0.0434 Brier score**).
 
 ---
 
-## 2. Dataset Characterization
-
-The ASSISTments Skill Builder dataset captures fine-grained student problem-solving interaction logs from an online tutoring system.
+## 2. Dataset & Feature Characterization
 
 | Property | Value |
 |---|---|
-| Total Raw Records | 525,534 rows |
-| Raw File Size | 83.2 MB |
-| Target Variable | `correct` (1 = solved correctly on first attempt, 0 = incorrect / needed hints) |
-| Target Distribution | ~69.3% Correct (1), ~30.7% Incorrect (0) |
-| Primary Features Used | `attempt_count`, `ms_first_response`, `hint_count`, `hint_total`, `overlap_time`, `opportunity` |
+| Raw / Engineered Records | 525,534 student interactions |
+| Target Variable | `correct` (`1` = solved correctly on first attempt, `0` = incorrect / needed hints) |
+| Full Target Distribution | **67.95%** Correct (`1`), **32.05%** Incorrect (`0`) |
+| Pipeline Modelling Partition | 100,000 stratified sample -> **80,000 train** / **20,000 test** (`src/prepare.py`) |
+| Active Predictor Features (11) | `log_opportunity`, `attempt_count`, `hint_count`, `bottom_hint`, `hint_ratio`, `user_prev_acc`, `problem_difficulty`, `skill_difficulty`, `is_skill_unmapped`, `log_response_time`, `is_rapid_guess` |
+| Excluded Leaky Column | `first_try_correct` (explicitly incorporates `correct == 1`) |
 
 ---
 
-## 3. Data Preprocessing and Partitioning
+## 3. Baseline Models Compared (`src/train.py`)
 
-The automated data preparation stage (`src/prepare.py`) performs the following operations:
-1. **Target Validation:** Filters rows to valid binary outcomes (`correct` $\in \{0, 1\}$).
-2. **Missing Value Imputation:** Imputes missing numerical entries using feature medians to avoid data leakage.
-3. **Partitioning:** Executes an 80/20 stratified split preserving target class ratios:
-   - **Training Set (`data/processed/train.csv`):** 80,000 samples
-   - **Testing Set (`data/processed/test.csv`):** 20,000 samples
+| Model | Artifact | Configuration | Role |
+|---|---|---|---|
+| **Logistic Regression** | `models/logreg_baseline.pkl` | `StandardScaler` + `LogisticRegression(C=1.0, max_iter=1000, class_weight="balanced")` | Interpretable linear reference |
+| **Random Forest (Selected)** | `models/baseline_model.pkl` | `RandomForestClassifier(n_estimators=100, max_depth=10, random_state=42)` | Primary non-linear benchmark & Phase 2 serving candidate |
 
----
+### Held-out Test Set Results (20,000 samples)
 
-## 4. Baseline Model Performance
+| Model | Accuracy | Precision | Recall | F1-Score | Macro-F1 | ROC-AUC | PR-AUC | R² | MCC | Brier |
+|---|---|---|---|---|---|---|---|---|---|---|
+| Logistic Regression | 0.8917 | 0.9188 | 0.9221 | 0.9204 | 0.8754 | 0.9404 | 0.9614 | 0.6435 | 0.7509 | 0.0821 |
+| **Random Forest** | **0.9468** | **0.9305** | **0.9960** | **0.9621** | **0.9362** | **0.9773** | **0.9876** | **0.8022** | **0.8785** | **0.0434** |
 
-A Random Forest Classifier was trained to establish an empirical benchmark:
+### Struggling-Student (`correct = 0`) & Subgroup Slice Diagnostics
+- **Catching struggling students (`class 0`):** Random Forest identifies **84.23%** of struggling attempts with **99.01% precision** (`class 0 F1 = 0.9102`), outperforming balanced Logistic Regression (`class 0 F1 = 0.8304`).
+- **Subgroup stability (`reports/baseline_metrics.json`):** Random Forest maintains strong discrimination across both mapped skills (`ROC-AUC = 0.9720`) and unmapped skills (`ROC-AUC = 0.9942`), as well as cold-start first opportunities (`opportunity == 1`, `ROC-AUC = 0.9451`) and practiced attempts (`ROC-AUC = 0.9796`).
 
-### Model Hyperparameters
-- **Estimators (`n_estimators`):** 100
-- **Maximum Depth (`max_depth`):** 10
-- **Random Seed (`random_state`):** 42
-- **Parallel Workers (`n_jobs`):** -1 (all available CPU cores)
-
-### Evaluation Metrics (Held-out Test Set)
-
-| Metric | Score | Interpretation |
-|---|---|---|
-| **Accuracy** | **0.9406** | 94.1% overall correct classifications on unseen interactions |
-| **Precision** | **0.9221** | 92.2% of predicted correct attempts were true positives |
-| **Recall** | **0.9971** | Successfully captures 99.7% of all correct student attempts |
-| **F1-Score** | **0.9581** | Harmonic mean reflecting balanced classification power |
-| **ROC-AUC** | **0.9810** | High separability between correct and incorrect student actions |
-
-### Feature Importance Summary
-1. `attempt_count`: Strongest negative predictor of first-time correctness.
-2. `hint_count` & `hint_total`: Explicit indicator of student difficulty.
-3. `ms_first_response`: Response latency correlating with cognitive load.
-4. `opportunity`: Learning curve progression over repeated skill practice.
+### Feature Importance Summary (`reports/figures/baseline_feature_importance.png`)
+1. `attempt_count` (`0.4216` Gini importance; `-4.66` standardized log-odds): Strongest negative signal of first-attempt mastery.
+2. `bottom_hint` (`0.1437`), `hint_count` (`0.1356`), and `hint_ratio` (`0.1270`): Direct help-seeking indicators.
+3. `problem_difficulty` (`0.0907`), `user_prev_acc` (`0.0271`), and `skill_difficulty` (`0.0262`): Item, student, and domain context priors.
+4. `log_response_time` (`0.0134`), `log_opportunity` (`0.0092`), and `is_rapid_guess` (`0.0036`): Latency and learning-curve signals.
 
 ---
 
-## 5. MLOps Architecture
+## 4. MLOps Reproducibility & Artifact Tracking
 
-```text
-Raw Dataset (data/raw/) ──[DVC Tracked]──> DAGsHub Storage
-        │
-        ▼ (src/prepare.py)
-Processed Partitions (data/processed/) ──[DVC Tracked]
-        │
-        ▼ (src/train.py)
-Random Forest Model (models/baseline_model.pkl) ──[DVC Tracked]
-        │
-        └──> Parameters, Metrics, Artifacts ──> Hosted MLflow (DAGsHub)
-```
-
-1. **DVC Pipeline (`dvc.yaml` & `dvc.lock`):**
-   - Chains `prepare` and `train` stages into a single reproducible execution graph.
-   - Any team member can reproduce the pipeline using `dvc repro`.
-2. **DAGsHub Remote Storage:**
-   - Raw and processed datasets and model artifacts are versioned in DAGsHub DVC storage.
-   - Collaborators sync data via `dvc pull`.
-3. **MLflow Tracking:**
-   - Experiments, hyperparameter logs, and metric curves are hosted at:  
-     `https://dagshub.com/suhaybfr/ML-ops.mlflow`
-
----
-
-## 6. Next Steps
-
-The core MLOps plumbing and baseline benchmark are established. The model work
-(EDA, feature engineering, baseline and SVM models, evaluation and experiment
-tracking) is complete and documented in `reports/model_validation_report.md` and
-`docs/MODEL_VALIDATION.md`.
-
-The remaining system modules are handled separately by teammates:
-1. **Deployment & Serving:** build FastAPI inference endpoints (`src/api.py`) and
-   containerize services with Docker.
-2. **LLM Tutor (RAG):** connect the predictive model to the conversational tutor.
-3. **Monitoring & Feedback Loop:** drift detection and retraining triggers.
+1. **DVC Dataset & Model Versioning:**
+   - Raw (`data/raw/skill_builder_data.csv.dvc`), cleaned (`data/interim/cleaned_data.csv.dvc`), engineered (`data/processed/engineered_features.csv.dvc`), split (`train.csv`, `test.csv`), and model binaries (`models/*.pkl`) are versioned in DVC and backed by DAGsHub storage.
+2. **Git-Tracked Validation Files (`cache: false` in `dvc.yaml`):**
+   - `reports/prepare_summary.json`, `reports/baseline_metrics.csv`, `reports/baseline_metrics.json`, and `reports/figures/baseline_*.png` remain directly visible in Git for review and automated `pytest` quality gates.
+3. **MLflow Experiment Tracking on DAGsHub:**
+   - Logged to `https://dagshub.com/suhaybfr/ML-ops.mlflow` with standardized tags, full 8-metric + risk/calibration summaries, validation JSON/CSV artifacts, and complete `MLmodel` bundles (`ModelSignature` + `input_example`).

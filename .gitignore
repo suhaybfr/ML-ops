@@ -9,12 +9,11 @@ __pycache__/
 venv/
 env/
 
-# Local configurations & secrets
+# Local configurations, secrets & local MLflow fallback
 .env
 .dvc/config.local
-
-# scratch notebooks
-notebooks/Clean_FeatEngg.ipynb
+mlruns/
+mlartifacts/
 
 # Jupyter notebook checkpoints
 .ipynb_checkpoints/

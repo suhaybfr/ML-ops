@@ -70,10 +70,20 @@ ML-ops/
 │       ├── engineered_features.csv.dvc # DVC pointer for feature matrix
 │       └── engineered_features.csv     # Final feature matrix (17 columns, tracked by DVC)
 ├── models/                             # Trained model artifacts (tracked by DVC)
+│   ├── baseline_model.pkl              # Random Forest baseline (Phase 2 champion)
+│   ├── logreg_baseline.pkl             # Logistic Regression linear reference
+│   └── svm_model.pkl                   # RBF-kernel SVM model
 ├── notebooks/
 │   ├── 01_baseline_model.ipynb         # Logistic regression baseline on the engineered features
 │   └── 02_svm_model_validation.ipynb   # SVM modelling, split and cross-validation study
 ├── reports/
+│   ├── baseline_metrics.csv            # Baseline evaluation summary table (Git-tracked)
+│   ├── baseline_metrics.json           # Full baseline metrics, calibration & slice checks
+│   ├── svm_metrics.json                # Standalone SVM metrics & slice checks
+│   ├── experiment_results.csv          # Multi-split comparison results (80/20, 70/30, 60/40)
+│   ├── cv_results.csv                  # Stratified 5-fold cross-validation results
+│   ├── prepare_summary.json            # Data split & schema summary
+│   ├── figures/                        # Confusion matrices, ROC/PR curves, feature importances
 │   ├── baseline_model_report.md        # Evaluation & architecture report
 │   ├── data_dictionary.md              # Field definitions for engineered features
 │   └── model_validation_report.md      # SVM, split and cross-validation results
@@ -81,13 +91,15 @@ ML-ops/
 │   ├── MLOPS_FLOW.md                   # End-to-end MLOps flow for the project
 │   └── MODEL_VALIDATION.md             # Validation methods, results and model comparison
 ├── src/
-│   ├── prepare.py                      # Data preprocessing & feature engineering pipeline
-│   ├── train.py                        # Random Forest baseline training & evaluation stage
+│   ├── features.py                     # Canonical 11-feature schema & leakage guardrails
+│   ├── prepare.py                      # Stratified train/test preparation from engineered_features.csv
+│   ├── train.py                        # Logistic Regression & Random Forest baseline stage
 │   ├── train_svm.py                    # Kernel SVM training, evaluation & MLflow logging
 │   ├── experiments.py                  # Split-robustness and model-comparison suite
-│   ├── evaluation.py                   # Shared metric definitions
-│   └── utils.py                        # MLflow DAGsHub configuration utility
+│   ├── evaluation.py                   # Shared metrics, calibration & slice risk diagnostics
+│   └── utils.py                        # MLflow DAGsHub configuration & dual artifact logger
 ├── tests/
+│   └── test_phase1_pipeline.py         # Automated schema, metric, artifact & risk tests
 ├── params.yaml                         # Pipeline parameters and hyperparameters
 ├── dvc.yaml                            # DVC reproducible pipeline stages
 ├── dvc.lock                            # DVC pipeline dependency & output lock
@@ -100,10 +112,10 @@ ML-ops/
 The pipeline is defined in `dvc.yaml`. DVC runs the steps in order and skips any step whose code, data or parameters haven't changed, so the same results can be reproduced from a clean checkout.
 
 ### Pipeline Stages
-1. **Prepare (`src/prepare.py`):** Loads the raw CSV, keeps valid binary targets, fills missing feature values with the median, and writes the stratified `data/processed/train.csv` and `data/processed/test.csv`.
-2. **Train (`src/train.py`):** Trains the Random Forest baseline, scores it with accuracy, precision, recall, F1 and ROC-AUC, logs the run to DAGsHub MLflow, and saves `models/baseline_model.pkl`.
-3. **Train SVM (`src/train_svm.py`):** Trains an RBF-kernel SVM (scaled first, because SVMs care about feature scale), scores it the same way, logs the run plus ROC and confusion-matrix figures to MLflow, and saves `models/svm_model.pkl`.
-4. **Experiments (`src/experiments.py`):** Puts logistic regression, SVM and random forest head to head over three train/test splits and 5-fold cross-validation, and writes `reports/experiment_results.csv` and `reports/cv_results.csv`.
+1. **Prepare (`src/prepare.py`):** Loads the DVC-tracked `data/processed/engineered_features.csv` matrix, validates the canonical 11-feature schema (`src/features.py`), caps extreme `attempt_count` outliers (`<= 50`), and writes stratified `data/processed/train.csv` (80,000 rows), `data/processed/test.csv` (20,000 rows), and `reports/prepare_summary.json`.
+2. **Train (`src/train.py`):** Trains both the **Logistic Regression** linear reference (`models/logreg_baseline.pkl`) and the **Random Forest** baseline (`models/baseline_model.pkl`), evaluates 8 metrics plus probability calibration & subgroup risk slices (`reports/baseline_metrics.json`, `reports/baseline_metrics.csv`), generates diagnostic plots, and logs complete MLflow model bundles (`MLmodel` + signature + `.pkl`) to DAGsHub.
+3. **Train SVM (`src/train_svm.py`):** Trains a `StandardScaler` + RBF-kernel SVM on 30,000 rows (`models/svm_model.pkl`), evaluates on the full 20,000-row held-out test set (`reports/svm_metrics.json`), and logs ROC/confusion figures plus model artifacts to MLflow.
+4. **Experiments (`src/experiments.py`):** Compares Logistic Regression, RBF-SVM, and Random Forest across three stratified splits (80/20, 70/30, 60/40) and 5-fold cross-validation, writing Git-tracked `reports/experiment_results.csv`, `reports/cv_results.csv`, and comparison plots.
 
 ### Running the Pipeline
 To reproduce the entire pipeline (or only stages whose code/params have changed):
@@ -160,7 +172,7 @@ Data Version Control (DVC) is used to track and version large dataset files with
 
 Data versioning with DVC, the pipeline in `dvc.yaml` and MLflow tracking on DAGsHub are all working and verified. The model side is done too. We trained the Random Forest baseline and an RBF-kernel SVM, then compared both against logistic regression across three train/test splits and 5-fold cross-validation, and logged every run to the `student_performance_baseline` experiment on DAGsHub.
 
-So far the Random Forest is the best model (F1 0.9589 and ROC-AUC 0.9783 on the 80/20 split) and the SVM is second (F1 0.9433), but the SVM still beats logistic regression on F1 and MCC. The full write-up is in `docs/MODEL_VALIDATION.md`, with the results report in `reports/model_validation_report.md`.
+So far the **Random Forest** (`models/baseline_model.pkl`) is the accepted baseline and Phase 2 champion (**Accuracy 0.9468**, **F1 0.9621**, **ROC-AUC 0.9773**, **MCC 0.8785**, **Brier 0.0434** on the 80k/20k split; **F1 0.9598** on the 30k-capped suite), followed by the **RBF-kernel SVM** (`models/svm_model.pkl`, **F1 0.9498** standalone / **0.9478** in the suite) and **Logistic Regression** (`models/logreg_baseline.pkl`, **F1 0.9353** in the suite). The full write-up is in `docs/MODEL_VALIDATION.md`, with detailed reports in `reports/baseline_model_report.md` and `reports/model_validation_report.md`.
 
 ## Project Goal
 

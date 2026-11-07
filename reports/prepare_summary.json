@@ -1,0 +1,44 @@
+{
+  "source_dataset": "data/processed/engineered_features.csv",
+  "full_dataset_rows": 525534,
+  "full_dataset_positive_rate": 0.6795,
+  "sampled_rows": 100000,
+  "train_rows": 80000,
+  "test_rows": 20000,
+  "train_positive_rate": 0.6795,
+  "test_positive_rate": 0.6794,
+  "predictor_feature_count": 11,
+  "predictor_features": [
+    "log_opportunity",
+    "attempt_count",
+    "hint_count",
+    "bottom_hint",
+    "hint_ratio",
+    "user_prev_acc",
+    "problem_difficulty",
+    "skill_difficulty",
+    "is_skill_unmapped",
+    "log_response_time",
+    "is_rapid_guess"
+  ],
+  "excluded_leaky_columns": [
+    "first_try_correct"
+  ],
+  "metadata_columns_retained_for_slice_checks": [
+    "user_id",
+    "problem_id",
+    "skill_name",
+    "opportunity"
+  ],
+  "attempt_count_cap": {
+    "max_attempt_count": 50,
+    "raw_max_attempt_count": 3824.0,
+    "capped_rows_in_full_dataset": 449
+  },
+  "parameters": {
+    "test_size": 0.2,
+    "random_state": 42,
+    "sample_size": 100000,
+    "max_attempt_count": 50
+  }
+}

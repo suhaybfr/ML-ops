@@ -2,9 +2,15 @@ pandas
 numpy
 scikit-learn
 matplotlib
+seaborn
 pyyaml
 joblib
+requests
 mlflow
 dvc
+dvc-http
 jupyter
 ipykernel
+nbformat
+nbconvert
+pytest
