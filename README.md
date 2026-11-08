@@ -1,16 +1,17 @@
 # AI-Based Digital Learning Assistant — MLOps Project
 
 [![MLOps CI/CD Pipeline](https://github.com/suhaybfr/ML-ops/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/suhaybfr/ML-ops/actions)
-[![MLflow](https://img.shields.io/badge/MLflow-Tracking-blue)](https://dagshub.com/suhaybfr/ML-ops.mlflow)
+[![MLflow](https://img.shields.io/badge/MLflow-Tracking%20%26%20Registry-blue)](https://dagshub.com/suhaybfr/ML-ops.mlflow)
 [![DVC](https://img.shields.io/badge/DVC-Versioned-9cf)](https://dagshub.com/suhaybfr/ML-ops.dvc)
 
 ## Overview
 
-An AI-based digital learning assistant that predicts student performance and provides personalized learning support.  The system combines:
+An AI-based digital learning assistant that predicts student problem-attempt correctness (`correct` in `{0, 1}`) on the **ASSISTments Skill Builder** dataset (`525,534` rows) so a downstream tutor knows when a student is struggling (`correct == 0`, `needs_intervention == true`) and requires timely instructional support.
 
-- **SVM Prediction Model** — trained on the ASSISTments Skill Builder dataset, served as a REST API.
-- **LLM/RAG Tutor** — Gemini-powered conversational tutor with Retrieval-Augmented Generation (LlamaIndex + Qdrant).
-- **Full MLOps Pipeline** — data versioning (DVC), experiment tracking (MLflow on DagsHub), monitoring (Evidently + Prometheus + Grafana), containerisation (Docker), and CI/CD (GitHub Actions).
+The system implements an end-to-end **MLOps lifecycle**:
+- **Phase 1 (Data, Features & Benchmarks):** DVC dataset/model versioning, unified 11-feature leakage-free contract (`src/features.py`), Logistic Regression / Random Forest / RBF-SVM training, multi-split & 5-fold cross-validation, and subgroup slice diagnostics (`src/evaluation.py`).
+- **Phase 2 (Quality Gates, Model Registry, Serving, Docker & CI/CD):** Automated model-risk & calibration quality gates (`src/validate_model.py`), DAGsHub MLflow Model Registry management (`src/register_model.py`), FastAPI + Pydantic 11-feature inference service (`app/main.py`) serving the **Champion Random Forest** (`models/baseline_model.pkl`), lean multi-stage Docker containerization, and GitHub Actions CI/CD.
+- **Phase 3 Scaffolding (Optional Profiles / Extensions):** Evidently/KS 11-feature drift checks (`src/monitoring.py`), drift-gated retraining (`src/retrain.py`), Prometheus + Grafana dashboards (`monitoring/`), and Gemini + LlamaIndex + Qdrant RAG tutor endpoints (`app/tutor.py`).
 
 ---
 
@@ -18,20 +19,15 @@ An AI-based digital learning assistant that predicts student performance and pro
 
 | Component | Tool |
 |---|---|
-| Language | Python 3.11 |
-| ML Framework | scikit-learn (SVM, Random Forest, Logistic Regression) |
-| Experiment Tracking | MLflow on DagsHub |
-| Data Versioning | DVC |
-| API | FastAPI + Uvicorn |
-| LLM | Google Gemini API (`gemini-1.5-flash`) |
-| Vector Store (RAG) | Qdrant |
-| RAG Orchestration | LlamaIndex |
-| Drift Detection | Evidently AI |
-| Metrics | Prometheus (`prometheus_client`) |
-| Dashboards | Grafana |
-| Containerisation | Docker + docker-compose |
-| CI/CD | GitHub Actions |
-| Dataset | ASSISTments Skill Builder |
+| Language | Python (3.11 in Docker/CI; 3.11–3.14 supported locally) |
+| Data & ML | Pandas, NumPy (`>=2.0`), scikit-learn (`RandomForestClassifier`, `SVC`, `LogisticRegression`) |
+| Dataset Versioning | DVC + DAGsHub HTTP Remote (`https://dagshub.com/suhaybfr/ML-ops.dvc`) |
+| Experiment Tracking & Model Registry | MLflow (`3.18.0`) on DAGsHub (`https://dagshub.com/suhaybfr/ML-ops.mlflow`) |
+| Inference API | FastAPI + Pydantic v2 + Uvicorn |
+| Testing & Quality Gates | PyTest, `src/validate_model.py`, Flake8 |
+| Containerisation | Multi-stage `Dockerfile` + Docker Compose (`profiles` for Phase 3 add-ons) |
+| CI/CD | GitHub Actions (`.github/workflows/ci.yml`) + GHCR / Docker Hub |
+| Phase 3 Extensions | Prometheus, Grafana, Evidently AI, Gemini + LlamaIndex + Qdrant |
 
 ---
 
@@ -39,278 +35,191 @@ An AI-based digital learning assistant that predicts student performance and pro
 
 ```text
 ML-ops/
-├── .dvc/                               # DVC configuration
-├── .github/workflows/ci.yml           # CI/CD pipeline (7 jobs)
+├── .dvc/                               # DVC configuration (credentials in gitignored config.local)
+├── .github/workflows/ci.yml            # Phase 2 CI/CD workflow (lint, gate, registry, docker, push)
 ├── app/
-│   ├── main.py                        # FastAPI prediction + Prometheus metrics
-│   └── tutor.py                       # LLM/RAG tutor endpoints (Gemini + Qdrant)
+│   ├── main.py                         # FastAPI 11-feature inference service + Prometheus /metrics
+│   └── tutor.py                        # Optional Phase 3 LLM/RAG tutor router (Gemini + Qdrant)
 ├── data/
-│   ├── raw/                           # Raw dataset (DVC-tracked)
-│   ├── interim/                       # Cleaned intermediate data (DVC-tracked)
-│   └── processed/                     # Engineered features & train/test splits (DVC-tracked)
+│   ├── raw/                            # Raw 525,534-row ASSISTments CSV (.dvc pointer)
+│   ├── interim/                        # Cleaned intermediate dataset (.dvc pointer)
+│   └── processed/                      # 17-column engineered_features.csv & train/test splits
 ├── docs/
-│   ├── MLOPS_FLOW.md
-│   └── MODEL_VALIDATION.md
-├── models/                            # Trained model artifacts (DVC-tracked)
-│   ├── baseline_model.pkl             # Random Forest baseline
-│   ├── logreg_baseline.pkl            # Logistic Regression reference
-│   └── svm_model.pkl                  # RBF-kernel SVM
-├── monitoring/
-│   ├── prometheus/
-│   │   ├── prometheus.yml             # Prometheus scrape config
-│   │   └── alert_rules.yml            # Alerting rules
-│   └── grafana/
-│       ├── provisioning/              # Auto-provisioned datasource + dashboard
-│       └── dashboards/
-│           └── mlops_dashboard.json   # Grafana dashboard
+│   ├── MLOPS_FLOW.md                   # End-to-end MLOps architecture & workflow guide
+│   └── MODEL_VALIDATION.md             # Validation methodology, metrics & model comparison
+├── models/                             # DVC-tracked serialized models
+│   ├── baseline_model.pkl              # Champion Random Forest (served by default)
+│   ├── logreg_baseline.pkl             # Standardized Logistic Regression reference
+│   └── svm_model.pkl                   # Scaled RBF-kernel SVM comparison model
+├── monitoring/                         # Optional Phase 3 Prometheus & Grafana configs
 ├── notebooks/
 │   ├── 01_baseline_model.ipynb
 │   └── 02_svm_model_validation.ipynb
 ├── reports/
-│   ├── baseline_metrics.csv           # Baseline evaluation summary table
-│   ├── baseline_metrics.json          # Baseline metrics & slice checks
-│   ├── svm_metrics.json               # SVM metrics & slice checks
-│   ├── experiment_results.csv         # Multi-split comparison results
-│   ├── cv_results.csv                 # Stratified 5-fold CV results
-│   ├── prepare_summary.json           # Data split & schema summary
-│   ├── drift/                         # Evidently HTML/JSON reports
-│   └── figures/                       # ROC curves, confusion matrices, feature importances
+│   ├── baseline_metrics.csv            # Git-tracked baseline summary table
+│   ├── baseline_metrics.json           # Full metrics, Brier calibration & subgroup slice checks
+│   ├── svm_metrics.json                # Standalone SVM metrics & slice checks
+│   ├── experiment_results.csv          # 80/20, 70/30, 60/40 hold-out comparison table
+│   ├── cv_results.csv                  # Stratified 5-fold cross-validation table
+│   ├── prepare_summary.json            # Partition & outlier-cap summary
+│   └── figures/                        # Confusion matrices, ROC/PR curves, feature importances
 ├── src/
-│   ├── features.py                    # Canonical 11-feature schema & guardrails
-│   ├── prepare.py                     # Data preprocessing stage
-│   ├── train.py                       # Logistic Regression & Random Forest baselines
-│   ├── train_svm.py                   # RBF-kernel SVM (primary model)
-│   ├── experiments.py                 # Multi-split model comparison
-│   ├── evaluation.py                  # Shared metric & risk functions
-│   ├── monitoring.py                  # Evidently drift detection
-│   ├── retrain.py                     # Drift-triggered retraining loop
-│   └── utils.py                       # MLflow / DagsHub setup
+│   ├── features.py                     # Canonical 11-feature schema & leakage guardrails
+│   ├── prepare.py                      # Stratified 80k/20k split & attempt_count capping
+│   ├── train.py                        # Logistic Regression & Random Forest training + MLflow
+│   ├── train_svm.py                    # Scaled RBF-SVM training + MLflow
+│   ├── experiments.py                  # Multi-split & 5-fold CV comparison suite
+│   ├── evaluation.py                   # Shared 8 metrics, Brier calibration & slice diagnostics
+│   ├── validate_model.py               # Phase 2 Model-Risk, Calibration & Latency Quality Gate
+│   ├── register_model.py               # Phase 2 MLflow Model Registry registration & verification
+│   ├── monitoring.py                   # Phase 3 11-feature drift detection (Evidently / KS)
+│   ├── retrain.py                      # Phase 3 drift-gated retraining & champion promotion
+│   └── utils.py                        # DAGsHub MLflow setup, offline fallback & MLmodel upload
 ├── tests/
-│   ├── conftest.py                    # Test configuration
-│   ├── test_pipeline.py               # PyTest pipeline & endpoint suite
-│   └── test_phase1_pipeline.py        # Phase 1 schema & invariant tests
-├── Dockerfile                         # Multi-stage Docker build
-├── docker-compose.yml                 # API + Prometheus + Grafana + Qdrant
-├── dvc.yaml                           # DVC pipeline stages
-├── params.yaml                        # Hyperparameters
-└── requirements.txt
+│   ├── conftest.py                     # Shared FastAPI TestClient & 11-feature fixtures
+│   ├── test_phase1_pipeline.py         # Phase 1 schema, partition & artifact tests
+│   └── test_pipeline.py                # Phase 2 prep, invariance, gate, registry & API tests
+├── Dockerfile                          # Multi-stage slim FastAPI runtime image
+├── docker-compose.yml                  # Phase 2 API default + optional Phase 3 profiles
+├── dvc.yaml                            # Reproducible DVC pipeline stages
+├── params.yaml                         # Pipeline & model hyperparameters
+├── requirements.txt                    # Full dev, training & test dependencies (Python 3.11–3.14)
+└── requirements-serving.txt            # Lean runtime dependencies for Docker serving
 ```
 
 ---
 
 ## Quick Start
 
-### 1 — Clone and pull data
+### 1. Install dependencies & pull DVC artifacts
 
 ```bash
 git clone https://github.com/suhaybfr/ML-ops.git
 cd ML-ops
 pip install -r requirements.txt
-dvc pull          # pulls data + model artifacts from DagsHub
+dvc pull
 ```
 
-### 2 — Run the full pipeline
+### 2. Run Model Quality Gate, Registry Check & Tests
 
 ```bash
-dvc repro         # runs prepare → train → train_svm → experiments
+python -m src.validate_model --require-artifact
+python -m src.register_model --verify-only
+pytest -v
 ```
 
-### 3 — Start all services locally
+### 3. Run the FastAPI Service (Local or Docker)
 
 ```bash
+# Local Uvicorn server
+uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+# Containerized Phase 2 API service (default)
 docker compose up --build
-```
 
-| Service | URL |
-|---|---|
-| FastAPI docs | http://localhost:8000/docs |
-| Prometheus | http://localhost:9090 |
-| Grafana | http://localhost:3000 (admin/admin) |
-| Qdrant UI | http://localhost:6333/dashboard |
+# Optional Phase 3 profiles (Prometheus + Grafana + Qdrant)
+docker compose --profile monitoring up --build -d
+docker compose --profile full up --build -d
+```
 
 ---
 
-## API Endpoints
-
-### Prediction
+## FastAPI Inference Service (`app/main.py`)
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `GET` | `/health` | Liveness probe |
-| `GET` | `/model/info` | Model metadata |
-| `GET` | `/metrics` | Prometheus metrics |
-| `POST` | `/predict` | Single prediction |
-| `POST` | `/predict/batch` | Batch predictions (up to 1000) |
+| `GET` | `/` | Service overview and endpoint directory |
+| `GET` | `/health` | Liveness and model-readiness probe |
+| `GET` | `/model/info` | Deployed model metadata, hyperparameters & 11-feature contract |
+| `GET` | `/metrics` | Prometheus metrics exposition |
+| `POST` | `/predict` | Single student-attempt prediction (`11` engineered features) |
+| `POST` | `/predict/batch` | Vectorized batch predictions (up to `1,000` attempts) |
 
-**Example single prediction:**
+### Canonical 11-Feature Request & Response (`POST /predict`)
+
+All predictions strictly validate the 11 leakage-free `ENGINEERED_FEATURES` defined in `src/features.py` (unknown, missing, or leaky fields such as `first_try_correct` return HTTP `422`):
 
 ```bash
 curl -X POST http://localhost:8000/predict \
   -H "Content-Type: application/json" \
-  -d '{"skill_id":7,"attempt_count":2,"ms_first_response":4500,"hint_count":1,"overlap_time":0.05}'
+  -d '{
+    "log_opportunity": 2.3979,
+    "attempt_count": 1.0,
+    "hint_count": 0.0,
+    "bottom_hint": 0,
+    "hint_ratio": 0.0,
+    "user_prev_acc": 0.78,
+    "problem_difficulty": 0.71,
+    "skill_difficulty": 0.68,
+    "is_skill_unmapped": 0,
+    "log_response_time": 9.62,
+    "is_rapid_guess": 0
+  }'
 ```
 
 ```json
-{"prediction": 1, "confidence": 0.4823, "label": "✅ Correct", "model_version": "svm_rbf_v1"}
-```
-
-### LLM/RAG Tutor
-
-> Requires `GOOGLE_API_KEY` environment variable. Optional — endpoints are skipped if Gemini is not configured.
-
-| Method | Endpoint | Description |
-|---|---|---|
-| `GET` | `/tutor/status` | Check tutor availability |
-| `POST` | `/tutor/ask` | Ask the tutor a question (with RAG) |
-| `POST` | `/tutor/explain-prediction` | Explain a model prediction in plain language |
-| `POST` | `/tutor/practice-questions` | Generate practice MCQs for a topic |
-
-**Example:**
-```bash
-curl -X POST http://localhost:8000/tutor/ask \
-  -H "Content-Type: application/json" \
-  -d '{"question":"Why do I keep getting penalised for hints on skill 7?","use_rag":true}'
-```
-
-**Index documents into Qdrant (one-time setup):**
-```bash
-PYTHONPATH=app python app/tutor.py --index docs/
+{
+  "prediction": 1,
+  "probability": 0.9476,
+  "needs_intervention": false,
+  "confidence": 0.9476,
+  "label": "Correct",
+  "model_version": "random_forest_baseline_v2"
+}
 ```
 
 ---
 
-## DVC Pipeline
+## Validated Benchmark Results & Model Registry
 
-```
-prepare → train (Random Forest) → train_svm (RBF SVM) → experiments
-```
+All models are trained and evaluated on the unified 11 engineered features (`log_opportunity`, `attempt_count`, `hint_count`, `bottom_hint`, `hint_ratio`, `user_prev_acc`, `problem_difficulty`, `skill_difficulty`, `is_skill_unmapped`, `log_response_time`, `is_rapid_guess`) and logged to the `student_performance_baseline` experiment on DAGsHub MLflow.
 
-```bash
-dvc repro                    # reproduce all stale stages
-dvc repro train_svm          # retrain SVM only
-dvc dag                      # visualise stage DAG
-```
+### Full-Split Hold-Out Evaluation (`80,000` train / `20,000` test)
 
-**Stage outputs:**
-- `data/processed/train.csv`, `test.csv`
-- `models/baseline_model.pkl`, `models/svm_model.pkl`
-- `reports/experiment_results.csv`, `reports/cv_results.csv`
+| Model | Artifact | Accuracy | Precision | Recall | F1 | Macro-F1 | ROC-AUC | PR-AUC | MCC | Brier | Class-0 Recall |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| **Random Forest (Champion)** | `models/baseline_model.pkl` | **0.9468** | **0.9305** | **0.9960** | **0.9621** | **0.9362** | **0.9773** | **0.9876** | **0.8785** | **0.0434** | **0.8423** |
+| **RBF-kernel SVM** (`30k` train cap) | `models/svm_model.pkl` | 0.9288 | 0.9107 | 0.9924 | 0.9498 | 0.9135 | 0.9313 | 0.9183 | 0.8369 | — | 0.7938 |
+| **Logistic Regression** (`balanced`) | `models/logreg_baseline.pkl` | 0.8917 | 0.9188 | 0.9221 | 0.9204 | 0.8754 | 0.9404 | 0.9614 | 0.7509 | 0.0821 | 0.8272 |
 
----
+### 30k-Capped Multi-Split (`80/20`) & 5-Fold Cross-Validation Suite (`src/experiments.py`)
 
-## Experiment Tracking
+| Model | 80/20 Accuracy | 80/20 F1 | 80/20 ROC-AUC | 80/20 MCC | 5-Fold CV F1 | 5-Fold CV ROC-AUC |
+|---|---|---|---|---|---|---|
+| **Random Forest** | **0.9435** | **0.9598** | **0.9742** | **0.8707** | **0.9611 ± 0.0016** | **0.9759 ± 0.0018** |
+| **RBF-kernel SVM** | 0.9259 | 0.9478 | 0.9259 | 0.8300 | 0.9491 ± 0.0014 | 0.9291 ± 0.0028 |
+| **Logistic Regression** | 0.9085 | 0.9353 | 0.9338 | 0.7869 | 0.9378 ± 0.0021 | 0.9375 ± 0.0031 |
 
-All runs are logged to DagsHub MLflow:
-
-- **Tracking URI:** `https://dagshub.com/suhaybfr/ML-ops.mlflow`
-- **Experiment:** `student_performance_baseline`
-- **Logged:** hyperparameters, metrics (accuracy, F1, ROC-AUC, MCC, PR-AUC), ROC curves, confusion matrices
-
-**Current best results (80/20 split):**
-
-| Model | F1 | ROC-AUC |
-|---|---|---|
-| Random Forest | 0.9589 | 0.9783 |
-| RBF-kernel SVM | 0.9433 | ~0.97 |
-| Logistic Regression | ~0.92 | ~0.95 |
+### MLflow Model Registry (`src/register_model.py`)
+- **Registered Model:** `student_performance_predictor` (alias `@champion`)
+- **Source Run:** `random_forest_baseline_v2` (`160e5351896f46e6b359316808177e86`, `runs:/160e5351896f46e6b359316808177e86/model`)
+- Register or verify via CLI:
+  ```bash
+  python -m src.register_model
+  python -m src.register_model --verify-only
+  ```
 
 ---
 
-## Monitoring
+## CI/CD Pipeline (`.github/workflows/ci.yml`)
 
-### Data Drift (Evidently)
-
-Run manually:
-```bash
-PYTHONPATH=src python src/monitoring.py \
-  --ref data/processed/train.csv \
-  --cur data/processed/test.csv \
-  --output reports/drift
+```text
+lint-and-test (flake8 + offline quality gate + PyTest)
+    └── model-gate-and-registry (DVC pull + live artifact latency/risk gate + full PyTest + MLflow Registry check)
+            ├── docker-build (slim multi-stage build + real 11-feature /predict smoke assertions)
+            │       └── docker-push (GHCR + optional Docker Hub on main)
+            └── metrics-comment (PR champion summary)
 ```
 
-Reports (HTML + JSON) saved to `reports/drift/`.  Also runs automatically in CI after every DVC pipeline run.
-
-### Prometheus Metrics
-
-The FastAPI app exposes `/metrics` in Prometheus exposition format.  Key metrics:
-
-| Metric | Type | Description |
-|---|---|---|
-| `prediction_requests_total` | Counter | Total requests by endpoint + result |
-| `prediction_latency_seconds` | Histogram | Request latency (p50/p95/p99) |
-| `model_loaded` | Gauge | 1 if model is loaded, 0 otherwise |
-| `prediction_errors_total` | Counter | Errors by endpoint + type |
-| `batch_prediction_size` | Histogram | Distribution of batch sizes |
-
-### Grafana
-
-Visit http://localhost:3000 (admin/admin).  The **MLOps Dashboard** is auto-provisioned with panels for:
-- Model status, requests/sec, latency percentiles, error rate, batch size distribution.
-
----
-
-## Retraining Feedback Loop
-
-`src/retrain.py` implements drift-triggered retraining:
-
-1. **Drift detection** via Evidently (compares reference vs. incoming distribution)
-2. **Trigger** `dvc repro train_svm` if drift share ≥ threshold (default 30 %)
-3. **Log** drift metrics to MLflow
-4. **Register** new model in MLflow Model Registry
-5. **Promote** to Production only if new F1 > current champion
-
-```bash
-PYTHONPATH=src python src/retrain.py \
-  --ref data/processed/train.csv \
-  --cur <new_production_data.csv> \
-  --drift-threshold 0.3
-
-# Force retrain regardless of drift:
-PYTHONPATH=src python src/retrain.py --force
-```
-
-In CI, this runs automatically on every push to `main` after the drift-check job.
-
----
-
-## CI/CD Pipeline (GitHub Actions)
-
-Seven jobs run in sequence on every push / PR:
-
-```
-lint-and-test
-    └── dvc-pipeline
-            ├── drift-check
-            │       └── retrain-if-drift (main only)
-            └── docker-build
-                    └── docker-push (main only)
-                            └── metrics-comment (PR only)
-```
-
-**Required secrets:**
+### Required GitHub Actions Secrets
 
 | Secret | Purpose |
 |---|---|
-| `DAGSHUB_USERNAME` | DVC remote + MLflow auth |
-| `DAGSHUB_PASSWORD` | DVC remote + MLflow auth |
-| `MLFLOW_TRACKING_USERNAME` | Same as DAGSHUB_USERNAME |
-| `MLFLOW_TRACKING_PASSWORD` | Same as DAGSHUB_PASSWORD |
-| `DOCKER_USERNAME` | Docker Hub push |
-| `DOCKER_PASSWORD` | Docker Hub access token |
-
----
-
-## Running Tests
-
-```bash
-pytest tests/ -v --tb=short
-```
-
-Test coverage:
-- `TestEvaluationHelpers` — metric functions in `evaluation.py`
-- `TestDataPreparation` — train/test split logic (synthetic data, no CSV needed)
-- `TestModelArtifacts` — loads and queries `svm_model.pkl` (skipped if not present)
-- `TestFastAPIEndpoints` — smoke tests `/health`, `/predict`, `/predict/batch`
+| `DAGSHUB_USERNAME` | DVC remote & MLflow authentication |
+| `DAGSHUB_PASSWORD` | DAGsHub access token |
+| `MLFLOW_TRACKING_USERNAME` | Optional override (falls back to `DAGSHUB_USERNAME`) |
+| `MLFLOW_TRACKING_PASSWORD` | Optional override (falls back to `DAGSHUB_PASSWORD`) |
+| `DOCKER_USERNAME` / `DOCKER_PASSWORD` | Optional Docker Hub push (GHCR uses built-in `GITHUB_TOKEN`) |
 
 ---
 
@@ -318,39 +227,17 @@ Test coverage:
 
 | Variable | Default | Description |
 |---|---|---|
-| `MODEL_PATH` | `../models/svm_model.pkl` | Path to model artifact |
-| `GOOGLE_API_KEY` | — | Gemini API key (tutor) |
-| `QDRANT_HOST` | `localhost` | Qdrant server hostname |
-| `QDRANT_PORT` | `6333` | Qdrant server port |
-| `GEMINI_MODEL` | `gemini-1.5-flash` | Gemini model name |
-| `MLFLOW_TRACKING_USERNAME` | — | DagsHub username |
-| `MLFLOW_TRACKING_PASSWORD` | — | DagsHub access token |
-
----
-
-## Project Status
-
-| Component | Status |
-|---|---|
-| DVC pipeline (prepare → train → SVM → experiments) | ✅ Done |
-| MLflow experiment tracking on DagsHub | ✅ Done |
-| FastAPI prediction service | ✅ Done |
-| Prometheus metrics (`/metrics` endpoint) | ✅ Done |
-| Evidently drift detection | ✅ Done |
-| Grafana dashboard (auto-provisioned) | ✅ Done |
-| Docker + docker-compose (full stack) | ✅ Done |
-| GitHub Actions CI/CD (7 jobs) | ✅ Done |
-| PyTest suite | ✅ Done |
-| Drift-triggered retraining loop | ✅ Done |
-| MLflow Model Registry integration | ✅ Done |
-| LLM/RAG Tutor (Gemini + LlamaIndex + Qdrant) | ✅ Done |
-| Monitoring alerting rules (Prometheus) | ✅ Done |
+| `MODEL_PATH` | `models/baseline_model.pkl` | Path to local DVC-tracked model artifact |
+| `MLFLOW_MODEL_URI` | _(unset)_ | Optional MLflow Registry URI (e.g. `models:/student_performance_predictor@champion`) with local fallback |
+| `MLFLOW_MODEL_NAME` | `student_performance_predictor` | Registered model name on DAGsHub MLflow |
+| `GOOGLE_API_KEY` | — | Optional Gemini API key for Phase 3 `/tutor/*` endpoints |
+| `QDRANT_HOST` / `QDRANT_PORT` | `localhost` / `6333` | Optional Qdrant host/port for Phase 3 RAG |
 
 ---
 
 ## Contributors
 
-* **Suhayb** ([@suhaybfr](https://github.com/suhaybfr)) — Project Lead & Serving
-* **Monica** ([@monicaguru10](https://github.com/monicaguru10)) — CI/CD Pipeline & MLflow Artifact Logging
+* **Suhayb** ([@suhaybfr](https://github.com/suhaybfr)) — Project Lead, Modelling, Quality Gates, Registry & Serving
+* **Monica** ([@monicaguru10](https://github.com/monicaguru10)) — CI/CD Pipeline & Monitoring Scaffolding
 * **Neetu** ([@aekaboteneetu](https://github.com/aekaboteneetu))
 * **Akhilesh** ([@akhileshchandaluri](https://github.com/akhileshchandaluri))

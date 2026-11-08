@@ -1,5 +1,5 @@
 # ================================================================
-# .dockerignore — Exclude unnecessary files from Docker context
+# .dockerignore — Exclude unnecessary & sensitive files from context
 # ================================================================
 
 # Git & CI
@@ -28,33 +28,31 @@ notebooks/
 *.ipynb
 .ipynb_checkpoints/
 
-# DVC internal files (remote config may have credentials)
-.dvc/config.local
-.dvc/tmp/
+# Secrets & DVC internal metadata
+.env
+.dvc/
+mlruns/
+mlartifacts/
 
-# Test outputs
+# Tests & lint outputs
+tests/
 .pytest_cache/
 .coverage
 coverage.xml
 junit-report.xml
 
-# IDE
+# IDE & OS
 .vscode/
 .idea/
 *.code-workspace
-
-# OS
 .DS_Store
 Thumbs.db
 *.swp
 *.swo
 
-# Docs
+# Docs, raw/processed datasets, monitoring configs & reports
 docs/
 *.md
-
-# Data (tracked via DVC, not Docker)
 data/
-
-# Reports & figures (generated at runtime)
+monitoring/
 reports/

@@ -1,0 +1,15 @@
+# Lean runtime dependencies for the Phase 2 FastAPI serving image
+numpy>=2.0.0
+pandas>=2.2.2,<3.0.0; python_version < '3.13'
+pandas>=2.2.2; python_version >= '3.13'
+scikit-learn>=1.9.0
+scipy>=1.13.0
+pyyaml
+joblib
+requests
+fastapi
+uvicorn[standard]
+pydantic>=2.0.0
+prometheus_client
+mlflow-skinny>=3.0.0
+cloudpickle

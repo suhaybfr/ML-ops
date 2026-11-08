@@ -1,7 +1,9 @@
-# Core ML & data science
-pandas<2.2.0
-numpy
-scikit-learn
+# Core ML & data science (PEP 508 markers support both Python 3.11 CI/Docker & Python 3.14 .venv)
+numpy>=2.0.0
+pandas>=2.2.2,<3.0.0; python_version < '3.13'
+pandas>=2.2.2; python_version >= '3.13'
+scikit-learn>=1.9.0
+scipy>=1.13.0
 matplotlib
 seaborn
 pyyaml
@@ -9,21 +11,19 @@ joblib
 requests
 
 # MLflow & DVC
-mlflow
+mlflow>=3.0.0
 dvc
 dvc-http
-dvc[s3]
 
-# FastAPI serving
+# FastAPI inference service
 fastapi
 uvicorn[standard]
+pydantic>=2.0.0
 httpx
 
-# Monitoring — Prometheus metrics
+# Monitoring (Phase 3 extensions)
 prometheus_client
-
-# Monitoring — Evidently data drift
-evidently>=0.4.0,<=0.4.38
+evidently>=0.4.33; python_version < '3.13'
 
 # Testing & Linting
 pytest

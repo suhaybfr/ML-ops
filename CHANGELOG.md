@@ -4,32 +4,29 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Phase 2 — Monitoring, Artifact Logging & CI/CD]
+## [Model Registry, Quality Gates & FastAPI Serving Alignment]
 ### Added
-- **MLflow Artifact Logging:** Comprehensive logging of diagnostic figures (`figures/`), validation summaries (`validation/`), configuration files (`config/params.yaml`), and interactive Evidently drift reports (`drift_reports/`) to DAGsHub MLflow.
-- **Evidently Drift Detection:** Added `src/monitoring.py` using Evidently `DataDriftPreset` and `ClassificationPreset` — generates HTML + JSON reports under `reports/drift/` and logs them to MLflow.
-- **Retraining Feedback Loop:** Added `src/retrain.py` — detects drift, triggers `dvc repro train_svm`, logs drift metrics and reports to MLflow, and promotes the new model in the MLflow Model Registry only if F1 improves.
-- **Prometheus & Grafana Monitoring:** Added Prometheus configuration (`monitoring/prometheus/`) and auto-provisioned Grafana dashboard (`monitoring/grafana/dashboards/mlops_dashboard.json`).
-- **FastAPI Serving & AI Tutor:** Added `app/main.py` (FastAPI prediction endpoints + `/metrics`) and `app/tutor.py` (Gemini + Qdrant RAG tutor).
-- **Docker Orchestration:** Added multi-stage `Dockerfile` and `docker-compose.yml` for API, Prometheus, Grafana, and Qdrant.
-- **CI/CD Pipeline:** Added 7-job GitHub Actions workflow (`.github/workflows/ci.yml`) covering linting, PyTest with coverage, DVC reproduction, drift checking, automated retraining, and Docker builds.
+- **Model-Risk & Quality Gate (`src/validate_model.py`):** Standalone validator enforcing 42 checks across the 11-feature schema, leakage exclusion, classification floors (Accuracy, F1, ROC-AUC, MCC, Macro-F1), Brier probability calibration (`<= 0.08`), struggling-student (`class 0`) recall (`>= 0.80`), all 6 subgroup slices, and live `models/baseline_model.pkl` inference latency (`< 100 ms`).
+- **MLflow Model Registry Manager (`src/register_model.py`):** Idempotent registration, `@champion` alias promotion, and `--verify-only` CI check for `student_performance_predictor` (`random_forest_baseline_v2`, `v1`) on DAGsHub MLflow without deprecated stage-transition calls.
+- **Lean Serving Requirements (`requirements-serving.txt`):** Dedicated production dependency list used by `Dockerfile` to exclude Jupyter, DVC, plotting, and test bloat from runtime containers.
 
-## [Phase 1 Cleanup — Phase 2 Readiness]
-### Added
-- **Unified Feature Contract (`src/features.py`):** Defined the canonical 11 leakage-free engineered features (`ENGINEERED_FEATURES`) from `data/processed/engineered_features.csv` across all DVC stages (`prepare`, `train`, `train_svm`, `experiments`) while retaining metadata identifiers for subgroup slice checks.
-- **Model-Risk & Slice Diagnostics (`src/evaluation.py`):** Added struggling-student (class 0) specificity/precision, macro-F1, Brier probability calibration, threshold search, and subgroup performance slices (mapped vs unmapped skills, rapid-guess `<3s` vs normal latency, cold-start `opportunity==1` vs practiced).
-- **Git-Tracked Validation Files (`reports/`):** Added `reports/prepare_summary.json`, `reports/baseline_metrics.csv`, `reports/baseline_metrics.json`, `reports/svm_metrics.json`, and un-ignored `reports/experiment_results.csv`, `reports/cv_results.csv`, and `reports/figures/*.png` (`cache: false` in `dvc.yaml`).
-- **Automated Phase 1 Verification Suite (`tests/test_phase1_pipeline.py`):** Added PyTest suite covering schema/leakage invariants, split integrity, model serialization & inference contracts, metric thresholds, and subgroup risk checks.
-
-### Fixed
-- **DAGsHub MLflow Model Artifacts (`src/utils.py`):** Fixed MLflow 3 compatibility so every run uploads both a full `MLmodel` bundle (`ModelSignature` + `input_example`, `cloudpickle` format) under `model/` and `.pkl` artifacts under `serialized_models/`, alongside validation JSON/CSV reports and plots, while keeping all original October MLflow runs intact.
-- **Git vs DVC Tracking Conflict:** Untracked `models/baseline_model.pkl` and `reports/.gitignore` from Git so DVC manages binary `.pkl` models (`baseline_model.pkl`, `logreg_baseline.pkl`, `svm_model.pkl`) cleanly without SCM collisions.
+### Changed & Fixed
+- **FastAPI 11-Feature Service (`app/main.py`):** Switched default `MODEL_PATH` to `models/baseline_model.pkl` (Champion Random Forest) with optional `MLFLOW_MODEL_URI` loading, replaced the obsolete 5-field stub and hardcoded feature fakes with strict validation over all 11 `ENGINEERED_FEATURES`, returned calibrated `probability` (`0–1`) and `needs_intervention` (`bool`), and fixed `GET /model/info` so both standalone estimators and `Pipeline` models work cleanly.
+- **Comprehensive Real-Model PyTest Suite (`tests/test_pipeline.py`, `tests/conftest.py`, `setup.cfg`):** Removed duplicate `[tool:pytest]` in `setup.cfg`, replaced the 5-column stub with real `src.prepare.prepare_data()` tests, and added 11-feature artifact, monotonicity invariance, latency SLA, quality-gate, registry, drift, and FastAPI endpoint tests.
+- **Docker & Compose (`Dockerfile`, `docker-compose.yml`, `.dockerignore`):** Pointed `MODEL_PATH` to `/app/models/baseline_model.pkl`, fixed the duplicate `/etc/grafana/provisioning/dashboards` volume mount collision, and placed Phase 3 services (`prometheus`, `grafana`, `qdrant`) behind optional Compose `profiles` (`monitoring`, `tutor`, `full`).
+- **Focused Phase 2 CI/CD (`.github/workflows/ci.yml`):** Removed push-triggered `drift-check` / `retrain-if-drift` jobs (which polluted `student_performance_baseline` with `drift_check_*` runs) and wasteful `docker-image.tar.gz` artifact transfers; added real-model DVC quality gate, MLflow Registry verification, and strict 11-feature container `/predict` assertions.
+- **Monitoring & Retraining Fixes (`src/monitoring.py`, `src/retrain.py`):** Updated `FEATURE_COLS` to all 11 `ENGINEERED_FEATURES`, isolated optional drift runs to `student_performance_monitoring`, defaulted retraining to `train` (Random Forest), filtered runs by explicit tags, and fixed `promoted` reporting.
+- **Cross-Python Dependencies & Benchmarks (`requirements.txt`, `README.md`):** Replaced `pandas<2.2.0` (`numpy<2` conflict) with `numpy>=2.0.0` + PEP 508 markers for Python 3.11–3.14 compatibility, and restored exact 11-feature benchmark tables in `README.md`.
 
 ---
 
-### Previous Releases
-- **SVM Model:** Added an RBF-kernel SVM stage (`src/train_svm.py`) that trains on scaled features, saves `models/svm_model.pkl` and logs metrics and figures to MLflow.
-- **Experiment Comparison:** Added `src/experiments.py` to compare logistic regression, SVM and random forest across three train/test splits and 5-fold cross-validation.
-- **Shared Metrics:** Added `src/evaluation.py` so every script scores models with the same metric functions.
-- **Interim & Processed Dataset Pipelines:** Exported cleaned base dataset to `data/interim/cleaned_data.csv` and engineered feature matrix to `data/processed/engineered_features.csv` via DVC.
-- **Baseline Modeling:** Added Random Forest baseline, evaluation reports, and DAGsHub remote tracking.
+## [Phase 2 Scaffolding — Monitoring, Artifact Logging & CI/CD]
+### Added
+- Initial scaffolding for FastAPI (`app/main.py`, `app/tutor.py`), Prometheus/Grafana (`monitoring/`), drift & retraining scripts (`src/monitoring.py`, `src/retrain.py`), multi-stage `Dockerfile`, `docker-compose.yml`, and GitHub Actions workflow.
+
+## [Phase 1 Cleanup — Phase 2 Readiness]
+### Added
+- **Unified Feature Contract (`src/features.py`):** Defined the canonical 11 leakage-free engineered features (`ENGINEERED_FEATURES`) from `data/processed/engineered_features.csv` across all DVC stages (`prepare`, `train`, `train_svm`, `experiments`).
+- **Model-Risk & Slice Diagnostics (`src/evaluation.py`):** Added struggling-student (class 0) specificity/precision, macro-F1, Brier probability calibration, threshold search, and subgroup performance slices.
+- **Git-Tracked Validation Files (`reports/`) & Phase 1 Tests (`tests/test_phase1_pipeline.py`).**
+- **DAGsHub MLflow `MLmodel` Bundles (`src/utils.py`).**

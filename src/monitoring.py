@@ -1,60 +1,153 @@
-"""
-Monitoring module — data drift detection and prediction logging.
+"""Monitoring module — data drift detection and prediction distribution checks.
 
-Uses Evidently AI to compute statistical drift between the training
-reference distribution and incoming prediction batches.  Results are
-written to ``reports/drift/`` as HTML + JSON so they can be viewed in
-a browser or parsed by downstream alerting scripts.
+Computes statistical drift across all 11 canonical ``ENGINEERED_FEATURES``
+defined in ``src.features`` between the training reference distribution and
+incoming prediction batches. Uses Evidently AI when installed, with a built-in
+two-sample Kolmogorov-Smirnov (``scipy.stats.ks_2samp``) fallback so drift
+reports (HTML + JSON) work cleanly across all Python versions.
 
 Usage (standalone):
-    python src/monitoring.py --ref data/processed/train.csv \
-                             --cur data/processed/test.csv
+    python -m src.monitoring --ref data/processed/train.csv \
+                             --cur data/processed/test.csv \
+                             --no-mlflow
 """
 
+from __future__ import annotations
+
 import argparse
+import html as html_lib
 import json
 import os
-from datetime import datetime
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
+if not __package__:
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+import numpy as np
 import pandas as pd
+from scipy.stats import ks_2samp
 
-# Compatibility patch: evidently imports infer_dtype_from_object which was removed in pandas >= 2.2
-import pandas.core.dtypes.common as _pcommon
-if not hasattr(_pcommon, 'infer_dtype_from_object'):
-    try:
-        from pandas._libs.lib import infer_dtype as _infer_dtype
-        _pcommon.infer_dtype_from_object = lambda val: (_infer_dtype(val), None)
-    except Exception:
-        pass
+from src.features import ENGINEERED_FEATURES, TARGET_COL
 
-# Evidently v0.4+ API
-try:
-    from evidently import ColumnMapping
-except ImportError:
-    try:
-        from evidently.pipeline.column_mapping import ColumnMapping
-    except ImportError:
+# Canonical 11 engineered predictor features (kept as FEATURE_COLS for compatibility)
+FEATURE_COLS = list(ENGINEERED_FEATURES)
+MONITORING_EXPERIMENT = "student_performance_monitoring"
+
+
+def _load_evidently_components():
+    """Lazily resolve Evidently Report / Presets / ColumnMapping across 0.4–0.7+."""
+    import pandas.core.dtypes.common as _pcommon
+
+    if not hasattr(_pcommon, "infer_dtype_from_object"):
         try:
-            from evidently.legacy.pipeline.column_mapping import ColumnMapping
-        except ImportError:
-            ColumnMapping = None
+            from pandas._libs.lib import infer_dtype as _infer_dtype
 
-from evidently.metric_preset import DataDriftPreset, ClassificationPreset
-from evidently.report import Report
+            _pcommon.infer_dtype_from_object = lambda val: (_infer_dtype(val), None)
+        except Exception:
+            pass
 
-FEATURE_COLS = [
-    "skill_id",
-    "attempt_count",
-    "ms_first_response",
-    "hint_count",
-    "overlap_time",
-]
-TARGET_COL = "correct"
+    column_mapping_cls = None
+    for mod_name in (
+        "evidently",
+        "evidently.pipeline.column_mapping",
+        "evidently.legacy.pipeline.column_mapping",
+    ):
+        try:
+            mod = __import__(mod_name, fromlist=["ColumnMapping"])
+            column_mapping_cls = getattr(mod, "ColumnMapping", None)
+            if column_mapping_cls is not None:
+                break
+        except Exception:
+            continue
 
-# ---------------------------------------------------------------------------
-# Core drift report
-# ---------------------------------------------------------------------------
+    for report_mod, preset_mod in (
+        ("evidently.report", "evidently.metric_preset"),
+        ("evidently.legacy.report", "evidently.legacy.metric_preset"),
+    ):
+        try:
+            rmod = __import__(report_mod, fromlist=["Report"])
+            pmod = __import__(preset_mod, fromlist=["DataDriftPreset", "ClassificationPreset"])
+            return (
+                getattr(rmod, "Report"),
+                getattr(pmod, "DataDriftPreset"),
+                getattr(pmod, "ClassificationPreset"),
+                column_mapping_cls,
+            )
+        except Exception:
+            continue
+
+    return None, None, None, None
+
+
+def _compute_ks_fallback_report(
+    reference_df: pd.DataFrame,
+    current_df: pd.DataFrame,
+    shared_features: list[str],
+    alpha: float = 0.05,
+    dataset_drift_threshold: float = 0.5,
+) -> tuple[dict, str]:
+    """Deterministic KS two-sample drift fallback when Evidently is not installed."""
+    drift_by_columns: dict[str, dict] = {}
+    drifted_count = 0
+
+    for col in shared_features:
+        ref_vals = pd.to_numeric(reference_df[col], errors="coerce").dropna().to_numpy()
+        cur_vals = pd.to_numeric(current_df[col], errors="coerce").dropna().to_numpy()
+        if len(ref_vals) == 0 or len(cur_vals) == 0:
+            stat, p_val, drifted = 0.0, 1.0, False
+        else:
+            res = ks_2samp(ref_vals, cur_vals)
+            stat, p_val = float(res.statistic), float(res.pvalue)
+            # Require both statistical significance and practical KS effect (>= 0.10)
+            drifted = bool(p_val < alpha and stat >= 0.10)
+        if drifted:
+            drifted_count += 1
+        drift_by_columns[col] = {
+            "column_name": col,
+            "stattest_name": "ks_2samp",
+            "drift_score": round(stat, 6),
+            "p_value": round(p_val, 6),
+            "drift_detected": drifted,
+        }
+
+    drift_share = float(drifted_count / len(shared_features)) if shared_features else 0.0
+    dataset_drift = bool(drift_share >= dataset_drift_threshold)
+
+    report_dict = {
+        "engine": "scipy_ks_fallback",
+        "metrics": [
+            {
+                "metric": "DataDriftTable",
+                "result": {
+                    "number_of_columns": len(shared_features),
+                    "number_of_drifted_columns": drifted_count,
+                    "share_of_drifted_columns": round(drift_share, 6),
+                    "dataset_drift": dataset_drift,
+                    "drift_by_columns": drift_by_columns,
+                },
+            }
+        ],
+    }
+
+    rows_html = "\n".join(
+        f"<tr><td>{html_lib.escape(col)}</td>"
+        f"<td>{info['drift_score']:.4f}</td>"
+        f"<td>{info['p_value']:.4g}</td>"
+        f"<td>{'DRIFTED' if info['drift_detected'] else 'OK'}</td></tr>"
+        for col, info in drift_by_columns.items()
+    )
+    html_doc = (
+        "<!DOCTYPE html><html><head><meta charset='utf-8'>"
+        "<title>Data Drift Report</title></head><body>"
+        f"<h1>Data Drift Summary (drift share: {drift_share:.2%})</h1>"
+        "<table border='1' cellpadding='6' cellspacing='0'>"
+        "<tr><th>Feature</th><th>KS Statistic</th><th>p-value</th><th>Status</th></tr>"
+        f"{rows_html}</table></body></html>\n"
+    )
+    return report_dict, html_doc
 
 
 def compute_drift_report(
@@ -62,80 +155,98 @@ def compute_drift_report(
     current_df: pd.DataFrame,
     output_dir: str = os.path.join("reports", "drift"),
     tag: Optional[str] = None,
-    log_to_mlflow: bool = True,
+    log_to_mlflow: bool = False,
 ) -> dict:
-    """
-    Generate an Evidently data-drift report comparing reference vs current data.
-
-    Parameters
-    ----------
-    reference_df : Training / baseline dataset with feature columns.
-    current_df   : Current / incoming batch to check for drift.
-    output_dir   : Directory where HTML and JSON reports are written.
-    tag          : Optional label appended to output filenames (e.g. a date).
-
-    Returns
-    -------
-    dict with ``drift_share`` (fraction of drifted features) and per-feature
-    drift flags.
-    """
+    """Generate a data-drift report across the 11 engineered features."""
     os.makedirs(output_dir, exist_ok=True)
-    tag = tag or datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    tag = tag or datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
 
-    # Keep only shared feature columns
-    shared_features = [c for c in FEATURE_COLS if c in reference_df.columns and c in current_df.columns]
-
-    mapping = None
-    if ColumnMapping is not None:
-        try:
-            mapping = ColumnMapping(
-                target=TARGET_COL if TARGET_COL in reference_df.columns else None,
-                numerical_features=shared_features,
-            )
-        except Exception:
-            mapping = None
-
-    report = Report(metrics=[DataDriftPreset()])
-    report.run(
-        reference_data=reference_df[shared_features + ([TARGET_COL] if TARGET_COL in reference_df.columns else [])],
-        current_data=current_df[shared_features + ([TARGET_COL] if TARGET_COL in current_df.columns else [])],
-        column_mapping=mapping,
-    )
+    shared_features = [
+        c for c in FEATURE_COLS if c in reference_df.columns and c in current_df.columns
+    ]
+    if not shared_features:
+        raise ValueError(
+            f"None of the 11 ENGINEERED_FEATURES were found in both DataFrames: {FEATURE_COLS}"
+        )
 
     html_path = os.path.join(output_dir, f"drift_report_{tag}.html")
     json_path = os.path.join(output_dir, f"drift_report_{tag}.json")
 
-    report.save_html(html_path)
+    Report, DataDriftPreset, _, ColumnMapping = _load_evidently_components()
+    if Report is not None and DataDriftPreset is not None:
+        has_target = TARGET_COL in reference_df.columns and TARGET_COL in current_df.columns
+        cols = shared_features + ([TARGET_COL] if has_target else [])
+        mapping = None
+        if ColumnMapping is not None:
+            try:
+                mapping = ColumnMapping(
+                    target=TARGET_COL if has_target else None,
+                    numerical_features=shared_features,
+                )
+            except Exception:
+                mapping = None
 
-    report_dict = report.as_dict()
-    with open(json_path, "w") as f:
+        report = Report(metrics=[DataDriftPreset()])
+        report.run(
+            reference_data=reference_df[cols],
+            current_data=current_df[cols],
+            column_mapping=mapping,
+        )
+        report.save_html(html_path)
+        report_dict = report.as_dict()
+    else:
+        report_dict, html_doc = _compute_ks_fallback_report(
+            reference_df, current_df, shared_features
+        )
+        with open(html_path, "w", encoding="utf-8") as f:
+            f.write(html_doc)
+
+    with open(json_path, "w", encoding="utf-8") as f:
         json.dump(report_dict, f, indent=2, default=str)
 
-    # Extract summary
     drift_results = _extract_drift_summary(report_dict)
-    print(f"[Monitoring] Drift report written to {html_path}")
-    print(f"[Monitoring] Drift share: {drift_results['drift_share']:.2%}")
-    for feat, drifted in drift_results["feature_drift"].items():
-        status = "⚠️  DRIFTED" if drifted else "✅ OK"
-        print(f"  {feat:<25}: {status}")
-
+    drift_results["evaluated_features"] = shared_features
     drift_results["html_path"] = html_path
     drift_results["json_path"] = json_path
 
-    # Log drift reports directly as MLflow artifacts
+    print(f"[Monitoring] Drift report written to {html_path}")
+    print(
+        f"[Monitoring] Drift share: {drift_results['drift_share']:.2%} "
+        f"({len(shared_features)} engineered features checked)"
+    )
+    for feat, drifted in drift_results["feature_drift"].items():
+        status = "DRIFTED" if drifted else "OK"
+        print(f"  {feat:<25}: {status}")
+
+    # Log to dedicated monitoring experiment (never pollutes student_performance_baseline)
     if log_to_mlflow:
         try:
             import mlflow
-            from utils import setup_mlflow
-            setup_mlflow(experiment_name="student_performance_baseline")
+            from src.utils import setup_mlflow
+
+            setup_mlflow(experiment_name=MONITORING_EXPERIMENT)
             with mlflow.start_run(run_name=f"drift_check_{tag}"):
+                mlflow.set_tags(
+                    {
+                        "phase": "phase_3_monitoring",
+                        "kind": "data_drift",
+                        "feature_set": "engineered_11",
+                    }
+                )
                 mlflow.log_artifact(html_path, artifact_path="drift_reports")
                 mlflow.log_artifact(json_path, artifact_path="drift_reports")
-                mlflow.log_metrics({
-                    "drift_share": float(drift_results.get("drift_share", 0.0)),
-                    "dataset_drifted": 1.0 if drift_results.get("dataset_drifted", False) else 0.0,
-                })
-                print("[Monitoring] Drift report artifacts logged to MLflow successfully!")
+                mlflow.log_metrics(
+                    {
+                        "drift_share": float(drift_results.get("drift_share", 0.0)),
+                        "dataset_drifted": 1.0
+                        if drift_results.get("dataset_drifted", False)
+                        else 0.0,
+                    }
+                )
+                print(
+                    f"[Monitoring] Drift artifacts logged to MLflow experiment "
+                    f"{MONITORING_EXPERIMENT!r}."
+                )
         except Exception as exc:
             print(f"[Monitoring] Notice: MLflow artifact logging skipped ({exc})")
 
@@ -143,27 +254,21 @@ def compute_drift_report(
 
 
 def _extract_drift_summary(report_dict: dict) -> dict:
-    """Parse Evidently report dict into a compact drift summary."""
-    summary = {"drift_share": 0.0, "dataset_drifted": False, "feature_drift": {}}
+    """Parse drift report dictionary into a compact summary."""
+    summary: dict = {"drift_share": 0.0, "dataset_drifted": False, "feature_drift": {}}
     try:
         for metric in report_dict.get("metrics", []):
             result = metric.get("result", {})
-            # Dataset-level drift
             if "share_of_drifted_columns" in result:
-                summary["drift_share"] = result["share_of_drifted_columns"]
-                summary["dataset_drifted"] = result.get("dataset_drift", False)
-            # Per-feature drift
+                summary["drift_share"] = float(result["share_of_drifted_columns"])
+                summary["dataset_drifted"] = bool(result.get("dataset_drift", False))
             drift_by_col = result.get("drift_by_columns", {})
             for col, col_result in drift_by_col.items():
-                summary["feature_drift"][col] = col_result.get("drift_detected", False)
+                if col in FEATURE_COLS:
+                    summary["feature_drift"][col] = bool(col_result.get("drift_detected", False))
     except Exception as exc:
         print(f"[Monitoring] Warning: could not parse drift summary: {exc}")
     return summary
-
-
-# ---------------------------------------------------------------------------
-# Classification performance report (requires ground-truth labels)
-# ---------------------------------------------------------------------------
 
 
 def compute_classification_report(
@@ -171,87 +276,91 @@ def compute_classification_report(
     current_df: pd.DataFrame,
     output_dir: str = os.path.join("reports", "drift"),
     tag: Optional[str] = None,
-) -> None:
-    """Generate an Evidently classification quality report."""
+) -> Optional[str]:
+    """Generate an Evidently classification quality report when Evidently is installed."""
     os.makedirs(output_dir, exist_ok=True)
-    tag = tag or datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    tag = tag or datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
 
-    shared_features = [c for c in FEATURE_COLS if c in reference_df.columns and c in current_df.columns]
+    Report, _, ClassificationPreset, ColumnMapping = _load_evidently_components()
+    if Report is None or ClassificationPreset is None:
+        print("[Monitoring] Evidently not installed; skipping HTML classification preset.")
+        return None
+
+    shared_features = [
+        c for c in FEATURE_COLS if c in reference_df.columns and c in current_df.columns
+    ]
     mapping = None
     if ColumnMapping is not None:
         try:
-            mapping = ColumnMapping(
-                target=TARGET_COL,
-                numerical_features=shared_features,
-            )
+            mapping = ColumnMapping(target=TARGET_COL, numerical_features=shared_features)
         except Exception:
             mapping = None
 
     report = Report(metrics=[ClassificationPreset()])
-    report.run(
-        reference_data=reference_df,
-        current_data=current_df,
-        column_mapping=mapping,
-    )
+    report.run(reference_data=reference_df, current_data=current_df, column_mapping=mapping)
 
     html_path = os.path.join(output_dir, f"classification_report_{tag}.html")
     report.save_html(html_path)
     print(f"[Monitoring] Classification report written to {html_path}")
+    return html_path
 
 
-# ---------------------------------------------------------------------------
-# CLI entry-point
-# ---------------------------------------------------------------------------
+def _synthetic_11_feature_frame(n: int, seed: int) -> pd.DataFrame:
+    rng = np.random.default_rng(seed)
+    return pd.DataFrame(
+        {
+            "log_opportunity": rng.uniform(0.69, 4.5, n),
+            "attempt_count": rng.integers(1, 5, n).astype(float),
+            "hint_count": rng.integers(0, 3, n).astype(float),
+            "bottom_hint": rng.integers(0, 2, n).astype(float),
+            "hint_ratio": rng.uniform(0.0, 1.0, n),
+            "user_prev_acc": rng.uniform(0.3, 0.95, n),
+            "problem_difficulty": rng.uniform(0.3, 0.9, n),
+            "skill_difficulty": rng.uniform(0.4, 0.85, n),
+            "is_skill_unmapped": rng.integers(0, 2, n).astype(float),
+            "log_response_time": rng.uniform(7.5, 11.5, n),
+            "is_rapid_guess": rng.integers(0, 2, n).astype(float),
+            TARGET_COL: rng.integers(0, 2, n),
+        }
+    )
 
 
-def _parse_args():
-    parser = argparse.ArgumentParser(description="Run Evidently drift detection.")
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Run 11-feature data drift detection.")
     parser.add_argument("--ref", required=True, help="Path to reference (training) CSV")
     parser.add_argument("--cur", required=True, help="Path to current (incoming) CSV")
-    parser.add_argument("--output", default=os.path.join("reports", "drift"), help="Output directory")
+    parser.add_argument(
+        "--output", default=os.path.join("reports", "drift"), help="Output directory"
+    )
     parser.add_argument("--tag", default=None, help="Label appended to output filenames")
-    parser.add_argument("--no-mlflow", action="store_true", help="Skip logging drift artifacts to MLflow")
+    parser.add_argument(
+        "--log-mlflow",
+        action="store_true",
+        help="Log drift artifacts to the student_performance_monitoring MLflow experiment",
+    )
+    parser.add_argument(
+        "--no-mlflow",
+        action="store_true",
+        help="Explicitly disable MLflow drift logging (default)",
+    )
     return parser.parse_args()
 
 
 if __name__ == "__main__":
     args = _parse_args()
-    if not os.path.exists(args.ref) or not os.path.exists(args.cur):
-        print(f"[Monitoring] Files {args.ref} or {args.cur} not found on disk.")
-        print("[Monitoring] Attempting to generate via prepare pipeline...")
-        try:
-            from prepare import prepare_data
-            prepare_data()
-        except Exception:
-            try:
-                from src.prepare import prepare_data
-                prepare_data()
-            except Exception as exc:
-                print(f"[Monitoring] Could not run prepare: {exc}")
-
     if os.path.exists(args.ref) and os.path.exists(args.cur):
-        ref = pd.read_csv(args.ref)
-        cur = pd.read_csv(args.cur)
+        ref_df = pd.read_csv(args.ref)
+        cur_df = pd.read_csv(args.cur)
     else:
-        print("[Monitoring] Generating synthetic baseline for drift evaluation...")
-        import numpy as np
-        np.random.seed(42)
-        n_ref, n_cur = 200, 100
-        ref = pd.DataFrame({
-            "skill_id": np.random.randint(1, 10, n_ref),
-            "attempt_count": np.random.poisson(2, n_ref),
-            "ms_first_response": np.random.exponential(15000, n_ref),
-            "hint_count": np.random.poisson(1, n_ref),
-            "overlap_time": np.random.exponential(20000, n_ref),
-            "correct": np.random.choice([0, 1], n_ref),
-        })
-        cur = pd.DataFrame({
-            "skill_id": np.random.randint(1, 10, n_cur),
-            "attempt_count": np.random.poisson(2, n_cur),
-            "ms_first_response": np.random.exponential(16000, n_cur),
-            "hint_count": np.random.poisson(1, n_cur),
-            "overlap_time": np.random.exponential(21000, n_cur),
-            "correct": np.random.choice([0, 1], n_cur),
-        })
+        print("[Monitoring] Reference/current CSVs missing; using synthetic 11-feature frames.")
+        ref_df = _synthetic_11_feature_frame(200, seed=42)
+        cur_df = _synthetic_11_feature_frame(100, seed=43)
 
-    compute_drift_report(ref, cur, output_dir=args.output, tag=args.tag, log_to_mlflow=not args.no_mlflow)
+    should_log = bool(args.log_mlflow and not args.no_mlflow)
+    compute_drift_report(
+        ref_df,
+        cur_df,
+        output_dir=args.output,
+        tag=args.tag,
+        log_to_mlflow=should_log,
+    )
