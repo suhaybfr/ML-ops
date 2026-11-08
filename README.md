@@ -93,9 +93,14 @@ ML-ops/
 
 ### 1. Install dependencies & pull DVC artifacts
 
+`requirements.txt` uses PEP 508 environment markers, so the same file works across both **Linux** and **Windows** (Python 3.11–3.14):
+
 ```bash
 git clone https://github.com/suhaybfr/ML-ops.git
 cd ML-ops
+
+# Create and activate a virtual environment (Linux/macOS: source .venv/bin/activate | Windows PowerShell: .venv\Scripts\Activate.ps1)
+python -m venv .venv
 pip install -r requirements.txt
 dvc pull
 ```
@@ -110,11 +115,38 @@ pytest -v
 
 ### 3. Run the FastAPI Service (Local or Docker)
 
+#### Option A — Pull & Run the Pre-Built Container Image (No Repo Clone Required)
+
+The CI/CD pipeline automatically publishes a verified image with `models/baseline_model.pkl` baked in to GitHub Container Registry (`ghcr.io`). You only need to run `docker pull` once; after that, `docker run` starts the API immediately from your local Docker cache.
+
+**Linux (Ubuntu / Debian):**
+```bash
+# Pull the image once from GitHub Container Registry
+sudo docker pull ghcr.io/suhaybfr/student-performance-predictor:latest
+
+# Start the container on port 8000
+sudo docker run --rm -p 8000:8000 --name student-api ghcr.io/suhaybfr/student-performance-predictor:latest
+```
+*(Tip: omit `sudo` if your Linux user is already added to the `docker` group via `sudo usermod -aG docker $USER`.)*
+
+**Windows (PowerShell or Command Prompt with Docker Desktop running):**
+```powershell
+# Pull the image once from GitHub Container Registry
+docker pull ghcr.io/suhaybfr/student-performance-predictor:latest
+
+# Start the container on port 8000
+docker run --rm -p 8000:8000 --name student-api ghcr.io/suhaybfr/student-performance-predictor:latest
+```
+
+Once running, open **http://localhost:8000/docs** in your browser to test endpoints interactively via Swagger UI, or check readiness from a terminal (`curl http://localhost:8000/health` on Linux, or `curl.exe http://localhost:8000/health` in Windows PowerShell). You only need to pull once per image tag; replace `:latest` with a specific commit tag (such as `:sha-79c3a8d`) to pin an exact CI build, and run `docker images` (`sudo docker images` on Linux) to view cached images. Press `Ctrl+C` to stop the container.
+
+#### Option B — Run from Source or Docker Compose
+
 ```bash
 # Local Uvicorn server
 uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
-# Containerized Phase 2 API service (default)
+# Containerized Phase 2 API service built from local source (default)
 docker compose up --build
 
 # Optional Phase 3 profiles (Prometheus + Grafana + Qdrant)
