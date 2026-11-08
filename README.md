@@ -3,6 +3,7 @@
 [![MLOps CI/CD Pipeline](https://github.com/suhaybfr/ML-ops/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/suhaybfr/ML-ops/actions)
 [![MLflow](https://img.shields.io/badge/MLflow-Tracking%20%26%20Registry-blue)](https://dagshub.com/suhaybfr/ML-ops.mlflow)
 [![DVC](https://img.shields.io/badge/DVC-Versioned-9cf)](https://dagshub.com/suhaybfr/ML-ops.dvc)
+[![Render](https://img.shields.io/badge/Render-Live%20API-success)](https://student-performance-predictor-sha-730adf1.onrender.com/docs)
 
 ## Overview
 
