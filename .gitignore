@@ -14,6 +14,7 @@ env/
 .dvc/config.local
 mlruns/
 mlartifacts/
+chroma_db/
 
 # Jupyter notebook checkpoints
 .ipynb_checkpoints/

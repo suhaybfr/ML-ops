@@ -70,6 +70,9 @@ jobs:
       - name: Run PyTest with coverage
         env:
           MLFLOW_OFFLINE: "1"
+          # Tutor tests are fully offline (fake Gemini LLM + mock embeddings); force an
+          # empty key so CI never depends on secrets (e.g. PRs from forks).
+          GOOGLE_API_KEY: ""
         run: |
           pytest tests/ -v \
             --tb=short \
@@ -148,6 +151,7 @@ jobs:
       - name: Run full PyTest suite against materialized DVC artifacts
         env:
           MLFLOW_OFFLINE: "1"
+          GOOGLE_API_KEY: ""
         run: pytest tests/ -v --tb=short
 
       - name: Verify Champion in DAGsHub MLflow Model Registry
@@ -336,6 +340,29 @@ jobs:
           assert 0.0 <= struggle["probability"] < 0.5
           assert struggle["needs_intervention"] is True
           PYEOF
+
+      - name: Smoke-test tutor router mounting (offline, no GOOGLE_API_KEY)
+        run: |
+          set -euo pipefail
+          IMAGE_TAG=$(echo "${{ steps.meta.outputs.tags }}" | head -1)
+          docker run -d --name tutor-test -p 8001:8000 \
+            -e ENABLE_TUTOR=1 -e GOOGLE_API_KEY= "$IMAGE_TAG"
+          trap 'docker logs tutor-test || true; docker rm -f tutor-test || true' EXIT
+
+          for i in $(seq 1 15); do
+            curl -sf http://localhost:8001/health > /dev/null 2>&1 && break
+            sleep 3
+          done
+
+          curl -sf http://localhost:8001/openapi.json | python3 -c \
+            "import json,sys; p=json.load(sys.stdin)['paths']; assert '/tutor/ask' in p and '/tutor/index' in p, p.keys()"
+
+          # Without a key the tutor must fail hard (HTTP 500), never return a canned answer.
+          CODE=$(curl -s -o /tmp/tutor.json -w '%{http_code}' -X POST http://localhost:8001/tutor/ask \
+            -H "Content-Type: application/json" -d '{"question": "How do I spot phishing?"}')
+          cat /tmp/tutor.json
+          test "$CODE" = "500"
+          grep -q "GOOGLE_API_KEY environment variable is not configured" /tmp/tutor.json
 
   # ─────────────────────────────────────────────────────────────────────────
   # JOB 4 ─ Push Container Image to GHCR / Docker Hub (main branch only)

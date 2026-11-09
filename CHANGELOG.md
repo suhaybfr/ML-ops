@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Phase 3 Conversational Digital Literacy Tutor]
+### Added
+- **Socratic RAG tutor (`app/tutor.py`):** `POST /tutor/ask`, `POST /tutor/index`, and `python -m app.tutor --index docs/`, backed by embedded ChromaDB (`./chroma_db`, ONNX `all-MiniLM-L6-v2` embeddings) with auto-seeded digital literacy modules and hard HTTP 500 failures (no canned fallbacks).
+- **Offline tutor tests (`tests/test_tutor.py`)** and a keyless container smoke test in CI.
+
+### Removed (deprecated)
+- `google-generativeai`, `llama-index-llms-gemini`, and `llama-index-embeddings-gemini` (end-of-support) — replaced by `google-genai` + `llama-index-llms-google-genai`.
+- Retired `gemini-1.5-flash` default — now `gemini-flash-lite-latest` (`GEMINI_MODEL`).
+- Legacy Chroma `hnsw:space` collection metadata — replaced by `configuration={"hnsw": {"space": "cosine"}}`.
+- Unused Qdrant Compose service, `qdrant_data` volume, `tutor` profile, and `QDRANT_*` settings.
+
 ## [Model Registry, Quality Gates & FastAPI Serving Alignment]
 ### Added
 - **Model-Risk & Quality Gate (`src/validate_model.py`):** Standalone validator enforcing 42 checks across the 11-feature schema, leakage exclusion, classification floors (Accuracy, F1, ROC-AUC, MCC, Macro-F1), Brier probability calibration (`<= 0.08`), struggling-student (`class 0`) recall (`>= 0.80`), all 6 subgroup slices, and live `models/baseline_model.pkl` inference latency (`< 100 ms`).

@@ -12,7 +12,7 @@ An AI-based digital learning assistant that predicts student problem-attempt cor
 The system implements an end-to-end **MLOps lifecycle**:
 - **Phase 1 (Data, Features & Benchmarks):** DVC dataset/model versioning, unified 11-feature leakage-free contract (`src/features.py`), Logistic Regression / Random Forest / RBF-SVM training, multi-split & 5-fold cross-validation, and subgroup slice diagnostics (`src/evaluation.py`).
 - **Phase 2 (Quality Gates, Model Registry, Serving, Docker & CI/CD):** Automated model-risk & calibration quality gates (`src/validate_model.py`), DAGsHub MLflow Model Registry management (`src/register_model.py`), FastAPI + Pydantic 11-feature inference service (`app/main.py`) serving the **Champion Random Forest** (`models/baseline_model.pkl`), lean multi-stage Docker containerization, and GitHub Actions CI/CD.
-- **Phase 3 Scaffolding (Optional Profiles / Extensions):** Evidently/KS 11-feature drift checks (`src/monitoring.py`), drift-gated retraining (`src/retrain.py`), Prometheus + Grafana dashboards (`monitoring/`), and Gemini + LlamaIndex + Qdrant RAG tutor endpoints (`app/tutor.py`).
+- **Phase 3 Scaffolding (Optional Profiles / Extensions):** Evidently/KS 11-feature drift checks (`src/monitoring.py`), drift-gated retraining (`src/retrain.py`), Prometheus + Grafana dashboards (`monitoring/`), and Gemini + LlamaIndex + embedded ChromaDB Socratic digital literacy tutor (`app/tutor.py`, `/tutor/ask`, `/tutor/index`).
 
 ---
 
@@ -28,7 +28,7 @@ The system implements an end-to-end **MLOps lifecycle**:
 | Testing & Quality Gates | PyTest, `src/validate_model.py`, Flake8 |
 | Containerisation | Multi-stage `Dockerfile` + Docker Compose (`profiles` for Phase 3 add-ons) |
 | CI/CD | GitHub Actions (`.github/workflows/ci.yml`) + GHCR / Docker Hub |
-| Phase 3 Extensions | Prometheus, Grafana, Evidently AI, Gemini + LlamaIndex + Qdrant |
+| Phase 3 Extensions | Prometheus, Grafana, Evidently AI, Gemini (Google Gen AI SDK) + LlamaIndex + ChromaDB |
 
 ---
 
@@ -40,7 +40,7 @@ ML-ops/
 ├── .github/workflows/ci.yml            # Phase 2 CI/CD workflow (lint, gate, registry, docker, push)
 ├── app/
 │   ├── main.py                         # FastAPI 11-feature inference service + Prometheus /metrics
-│   └── tutor.py                        # Optional Phase 3 LLM/RAG tutor router (Gemini + Qdrant)
+│   └── tutor.py                        # Phase 3 Socratic RAG tutor router (Gemini + ChromaDB, ENABLE_TUTOR=1)
 ├── data/
 │   ├── raw/                            # Raw 525,534-row ASSISTments CSV (.dvc pointer)
 │   ├── interim/                        # Cleaned intermediate dataset (.dvc pointer)
@@ -150,7 +150,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 # Containerized Phase 2 API service built from local source (default)
 docker compose up --build
 
-# Optional Phase 3 profiles (Prometheus + Grafana + Qdrant)
+# Optional Phase 3 monitoring profiles (Prometheus + Grafana)
 docker compose --profile monitoring up --build -d
 docker compose --profile full up --build -d
 ```
@@ -264,7 +264,9 @@ lint-and-test (flake8 + offline quality gate + PyTest)
 | `MLFLOW_MODEL_URI` | _(unset)_ | Optional MLflow Registry URI (e.g. `models:/student_performance_predictor@champion`) with local fallback |
 | `MLFLOW_MODEL_NAME` | `student_performance_predictor` | Registered model name on DAGsHub MLflow |
 | `GOOGLE_API_KEY` | — | Optional Gemini API key for Phase 3 `/tutor/*` endpoints |
-| `QDRANT_HOST` / `QDRANT_PORT` | `localhost` / `6333` | Optional Qdrant host/port for Phase 3 RAG |
+| `ENABLE_TUTOR` | `0` (`1` in Compose) | Mount the Phase 3 `/tutor/*` router |
+| `GEMINI_MODEL` | `gemini-flash-lite-latest` | Gemini model used by the tutor (Google Gen AI SDK) |
+| `CHROMA_PERSIST_DIR` | `./chroma_db` | Embedded ChromaDB vector store directory |
 
 ---
 

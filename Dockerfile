@@ -24,7 +24,13 @@ LABEL maintainer="MLOps Team <https://github.com/suhaybfr/ML-ops>" \
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     MODEL_PATH=/app/models/baseline_model.pkl \
+    CHROMA_PERSIST_DIR=/app/chroma_db \
+    HOME=/home/mlopsuser \
     PORT=8000
+
+# UID/GID 1000 by default so the ./chroma_db bind mount (docker-compose) is writable
+ARG APP_UID=1000
+ARG APP_GID=1000
 
 WORKDIR /app
 
@@ -36,12 +42,20 @@ COPY app/        ./app/
 COPY src/        ./src/
 COPY models/     ./models/
 COPY params.yaml ./params.yaml
+# Course documents for `python -m app.tutor --index docs/` and POST /tutor/index
+COPY docs/       ./docs/
 
 # Run as unprivileged user
-RUN addgroup --system mlops && adduser --system --ingroup mlops mlopsuser \
-    && chown -R mlopsuser:mlops /app
+RUN addgroup --system --gid ${APP_GID} mlops \
+    && adduser --system --uid ${APP_UID} --ingroup mlops --home /home/mlopsuser mlopsuser \
+    && mkdir -p /app/chroma_db \
+    && chown -R mlopsuser:mlops /app /home/mlopsuser
 
 USER mlopsuser
+
+# Pre-bake ChromaDB's ONNX all-MiniLM-L6-v2 embedding model (~80 MB, CPU-only) so the
+# tutor works without a runtime download
+RUN python -c "from chromadb.utils.embedding_functions import ONNXMiniLM_L6_V2; ONNXMiniLM_L6_V2()(['warmup'])"
 
 EXPOSE 8000
 

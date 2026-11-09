@@ -52,7 +52,7 @@ DVC versions large datasets and fitted `.pkl` models (`data/raw/skill_builder_da
 
 ### FastAPI Serving, Docker & Optional Phase 3 Profiles
 - `app/main.py` loads `models/baseline_model.pkl` by default (with optional `MLFLOW_MODEL_URI` support), validates all 11 `ENGINEERED_FEATURES`, and returns `prediction`, calibrated `probability` (`0–1`), `needs_intervention` (`bool`), and `model_version`.
-- `docker compose up --build` starts only the Phase 2 FastAPI container; Phase 3 services (`prometheus`, `grafana`, `qdrant`) are opt-in via `--profile monitoring`, `--profile tutor`, or `--profile full`.
+- `docker compose up --build` starts only the Phase 2 FastAPI container; Phase 3 monitoring services (`prometheus`, `grafana`) are opt-in via `--profile monitoring` or `--profile full`; the tutor (`ENABLE_TUTOR=1`) runs inside the API container with an embedded ChromaDB store mounted at `./chroma_db`.
 
 ## File Map
 
@@ -69,7 +69,7 @@ DVC versions large datasets and fitted `.pkl` models (`data/raw/skill_builder_da
 | `src/monitoring.py` | Phase 3 11-feature drift detection (Evidently AI with KS fallback). |
 | `src/retrain.py` | Phase 3 drift-gated retraining & quality-gated champion promotion. |
 | `app/main.py` | Phase 2 FastAPI inference service + `/metrics` Prometheus exposition. |
-| `app/tutor.py` | Optional Phase 3 Gemini + LlamaIndex + Qdrant conversational tutor router. |
+| `app/tutor.py` | Optional Phase 3 Gemini (Google Gen AI SDK) + LlamaIndex + ChromaDB Socratic digital literacy tutor router. |
 | `Dockerfile` / `requirements-serving.txt` | Lean multi-stage production container image for FastAPI serving. |
 | `docker-compose.yml` | Phase 2 API default orchestration + optional Phase 3 `monitoring` / `tutor` / `full` profiles. |
 | `.github/workflows/ci.yml` | 5-job Phase 2 CI/CD workflow (lint/pytest -> DVC gate/registry -> Docker smoke -> push -> PR summary). |

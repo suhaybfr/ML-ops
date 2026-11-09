@@ -56,3 +56,8 @@ docs/
 data/
 monitoring/
 reports/
+
+# Phase 3 tutor: ship course documents, but never the local vector store
+!docs/
+!docs/**
+chroma_db/

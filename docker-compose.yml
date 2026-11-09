@@ -3,10 +3,9 @@
 # =============================================================================
 #
 #  Usage:
-#    docker compose up --build                     # Phase 2: FastAPI service only
+#    docker compose up --build                     # FastAPI service (+ /tutor when ENABLE_TUTOR=1)
 #    docker compose --profile monitoring up -d     # API + Prometheus + Grafana
-#    docker compose --profile tutor up -d          # API + Qdrant vector store
-#    docker compose --profile full up --build -d   # Full stack (API + Monitoring + Qdrant)
+#    docker compose --profile full up --build -d   # Full stack (API + Monitoring)
 #    docker compose down                           # Stop and remove containers
 #
 # =============================================================================
@@ -30,8 +29,16 @@ services:
       - MLFLOW_TRACKING_USERNAME=${MLFLOW_TRACKING_USERNAME:-}
       - MLFLOW_TRACKING_PASSWORD=${MLFLOW_TRACKING_PASSWORD:-}
       - PYTHONUNBUFFERED=1
+      # Phase 3 conversational tutor (/tutor/*) — values come from the git-ignored .env
+      - ENABLE_TUTOR=${ENABLE_TUTOR:-1}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
+      - GEMINI_MODEL=${GEMINI_MODEL:-gemini-flash-lite-latest}
+      - CHROMA_PERSIST_DIR=/app/chroma_db
     volumes:
       - ./models:/app/models:ro
+      # Persistent embedded ChromaDB vector store (survives container restarts).
+      # Run `mkdir -p chroma_db` first so the directory is owned by your host user.
+      - ./chroma_db:/app/chroma_db
     healthcheck:
       test:
         [
@@ -96,26 +103,9 @@ services:
     networks:
       - mlops-network
 
-  # ───────────────────────────────────────────────────────────────────────────
-  # Phase 3 Optional Profile (`tutor` / `full`): Qdrant Vector Store (port 6333)
-  # ───────────────────────────────────────────────────────────────────────────
-  qdrant:
-    image: qdrant/qdrant:v1.9.2
-    container_name: mlops-qdrant
-    profiles: ["tutor", "phase3", "full"]
-    ports:
-      - "6333:6333"
-      - "6334:6334"
-    volumes:
-      - qdrant_data:/qdrant/storage
-    restart: unless-stopped
-    networks:
-      - mlops-network
-
 volumes:
   prometheus_data:
   grafana_data:
-  qdrant_data:
 
 networks:
   mlops-network:

@@ -25,6 +25,13 @@ httpx
 prometheus_client
 evidently>=0.4.33; python_version < '3.13'
 
+# Phase 3 conversational tutor (app/tutor.py)
+chromadb>=1.0.0
+llama-index-core>=0.12.0
+llama-index-vector-stores-chroma>=0.4.0
+llama-index-llms-google-genai>=0.11.0
+google-genai>=1.0.0
+
 # Testing & Linting
 pytest
 pytest-cov
