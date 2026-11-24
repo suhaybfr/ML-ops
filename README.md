@@ -256,6 +256,49 @@ lint-and-test (flake8 + offline quality gate + PyTest)
 
 ---
 
+## PDF tutor
+
+With the API running and `ENABLE_TUTOR=1`, open [the study room](http://localhost:8000/tutor/).
+Docker Compose enables the tutor by default. Set `GOOGLE_API_KEY` in the local
+`.env` for Gemini answers. For a source installation, install `requirements-serving.txt`,
+set the two environment variables in your shell, and run `uvicorn app.main:app --port 8000`.
+
+1. Choose **Upload a PDF**. Select a text-based PDF up to 10 MiB and 200 pages.
+2. When indexing finishes, the PDF becomes the active source. Ask a question or choose
+   a suggested prompt. Expand the numbered passages under each answer to see its page evidence.
+3. Ask a follow-up in the same chat. Switching sources or choosing **New chat** clears
+   the conversation. Previously indexed PDFs remain available from the shared library.
+
+### Storage and operation
+
+The tutor extracts text page by page using pypdf and embeds passages with its local
+MiniLM model. Each PDF has a collection identified by its content hash within the
+configured tutor namespace. A collection is published after all passages are indexed.
+Uploading identical bytes reuses the existing entry. A revised file has a new ID even
+when its filename matches. Blank pages are skipped and citations retain the original
+one-based PDF page numbers. Image-only scans require OCR before upload. Password-protected
+files and documents exceeding 500,000 extracted characters are rejected.
+
+Chroma persists the passages and metadata under `CHROMA_PERSIST_DIR`. The original
+PDF is discarded after extraction. Keep that directory on persistent storage across
+restarts. Run one API worker per embedded database directory (the Docker default).
+The library is shared by everyone with access to this tutor. Deploy it within the
+intended class access boundary. Gemini receives the selected excerpts, question,
+and up to three recent turns when the browser requests an answer. Uploading only
+requires the local embedding model, which the Docker build downloads ahead of time.
+
+| Request | Behavior |
+|---|---|
+| `GET /tutor/` | Open the study room |
+| `POST /tutor/documents?filename=lecture.pdf` | Send PDF bytes with `Content-Type: application/pdf`. Returns the document ID and page/chunk counts |
+| `GET /tutor/documents` | List completed uploads for the shared library |
+| `POST /tutor/ask` | Send e.g. `{"document_id":"<returned ID>","question":"Explain the main idea."}`. Omit the ID for the original curriculum |
+
+The browser and PDF library run alongside the existing prediction API. Adding course
+material updates the retrieval index immediately and leaves trained model versions intact.
+Run `python -m pytest tests/test_tutor.py` to exercise PDF ingestion, persistence,
+page citations, source selection and failure recovery with an isolated database and offline model doubles.
+
 ## Environment Variables
 
 | Variable | Default | Description |
