@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#203f36">
+  <title>Study room · Course tutor</title>
+  <link rel="stylesheet" href="/tutor/assets/study.css">
+  <script defer src="/tutor/assets/study.js"></script>
+</head>
+<body>
+  <header><div class="wordmark"><span class="book-mark" aria-hidden="true"></span> Study room</div><span>Digital learning assistant</span></header>
+  <main>
+    <aside aria-labelledby="library-title">
+      <h2 id="library-title">Course library</h2>
+      <p class="muted">Choose the material you want to study.</p>
+      <nav id="library" aria-label="Study sources"></nav>
+      <button id="upload" class="upload" type="button">＋ Upload a PDF</button>
+      <input id="file" type="file" accept="application/pdf,.pdf" hidden>
+      <small>Shared course library · 10 MiB per PDF</small>
+      <p id="file-status" role="status"></p>
+    </aside>
+    <section class="desk" aria-labelledby="title">
+      <div class="desk-heading"><div><p class="eyebrow">Active source</p><h1 id="title">Digital literacy</h1></div>
+        <button id="reset" type="button" hidden>New chat</button></div>
+      <div id="conversation" role="log" aria-label="Tutor conversation" aria-live="polite"></div>
+      <div id="welcome">
+        <div class="rule" aria-hidden="true"></div><h2>What would you like to understand?</h2>
+        <p>Ask a question and explore the passages behind the answer.</p>
+        <div id="starters" aria-label="Suggested questions"></div>
+      </div>
+      <div class="compose">
+        <form id="ask">
+          <label for="question">Your question</label>
+          <textarea id="question" rows="2" maxlength="4000" placeholder="Ask about this source…" required></textarea>
+          <button type="submit" id="send">Ask tutor <span aria-hidden="true">↑</span></button>
+        </form>
+        <p id="ask-status" role="status"></p>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

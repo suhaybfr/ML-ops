@@ -85,13 +85,9 @@ app = FastAPI(
 
 # Optional Phase 3 LLM/RAG Tutor router (decoupled in Phase 2 unless ENABLE_TUTOR=1)
 if os.environ.get("ENABLE_TUTOR", "0") == "1":
-    for _tutor_module in ("app.tutor", "tutor"):
-        try:
-            _mod = __import__(_tutor_module, fromlist=["router"])
-            app.include_router(_mod.router)
-            break
-        except ImportError:
-            continue
+    from app.tutor import router as tutor_router
+
+    app.include_router(tutor_router)
 
 app.add_middleware(
     CORSMiddleware,
@@ -468,6 +464,7 @@ def root():
             "batch_predict": "POST /predict/batch",
             "metrics": "GET /metrics",
             "docs": "GET /docs",
+            **({"tutor": "GET /tutor"} if os.environ.get("ENABLE_TUTOR") == "1" else {}),
         },
         "project": "https://github.com/suhaybfr/ML-ops",
         "dagshub": "https://dagshub.com/suhaybfr/ML-ops",
