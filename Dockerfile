@@ -37,25 +37,24 @@ WORKDIR /app
 # Copy installed serving packages from builder
 COPY --from=builder /install /usr/local
 
-# Copy inference service, canonical 11-feature schema, config, and DVC-pulled model
-COPY app/        ./app/
-COPY src/        ./src/
-COPY models/     ./models/
-COPY params.yaml ./params.yaml
-# Course documents for `python -m app.tutor --index docs/` and POST /tutor/index
-COPY docs/       ./docs/
-
-# Run as unprivileged user
+# Create unprivileged user and pre-bake ChromaDB's ONNX all-MiniLM-L6-v2 (~80 MB, CPU-only)
+# BEFORE copying app/src so code edits rebuild in <2s without re-downloading ONNX weights.
 RUN addgroup --system --gid ${APP_GID} mlops \
     && adduser --system --uid ${APP_UID} --ingroup mlops --home /home/mlopsuser mlopsuser \
-    && mkdir -p /app/chroma_db \
+    && mkdir -p /app/chroma_db /app/reports/drift /app/data/live \
     && chown -R mlopsuser:mlops /app /home/mlopsuser
 
 USER mlopsuser
-
-# Pre-bake ChromaDB's ONNX all-MiniLM-L6-v2 embedding model (~80 MB, CPU-only) so the
-# tutor works without a runtime download
 RUN python -c "from chromadb.utils.embedding_functions import ONNXMiniLM_L6_V2; ONNXMiniLM_L6_V2()(['warmup'])"
+
+# Copy inference service, canonical 11-feature schema, config, offline metrics, and DVC-pulled model
+COPY --chown=mlopsuser:mlops app/                          ./app/
+COPY --chown=mlopsuser:mlops src/                          ./src/
+COPY --chown=mlopsuser:mlops models/                       ./models/
+COPY --chown=mlopsuser:mlops params.yaml                   ./params.yaml
+COPY --chown=mlopsuser:mlops reports/baseline_metrics.json ./reports/baseline_metrics.json
+# Course documents for `python -m app.tutor --index docs/` and POST /tutor/index
+COPY --chown=mlopsuser:mlops docs/                         ./docs/
 
 EXPOSE 8000
 
@@ -63,4 +62,5 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3 \
     CMD python -c "import json, urllib.request; d = json.loads(urllib.request.urlopen('http://localhost:8000/health').read()); assert d.get('status') == 'ok' and d.get('model_loaded') is True" || exit 1
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]
+# One writer process owns embedded ChromaDB and consistent in-process Prometheus metrics.
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

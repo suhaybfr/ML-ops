@@ -1,0 +1,369 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Digital Literacy Assistant · Study room &amp; MLOps</title>
+  <link rel="stylesheet" href="/tutor/assets/study.css">
+  <script defer src="/tutor/assets/study.js"></script>
+</head>
+<body>
+  <header class="site-header">
+    <div class="header-inner">
+      <div class="brand-group">
+        <span class="brand-title">Digital Literacy Assistant</span>
+        <span class="brand-sep">/</span>
+        <span class="brand-sub">Study room</span>
+      </div>
+
+      <nav class="section-tabs" role="tablist" aria-label="Workspace sections">
+        <button type="button" role="tab" class="tab-btn active" data-tab="tutor" aria-selected="true">
+          Tutor &amp; Assessment
+        </button>
+        <button type="button" role="tab" class="tab-btn" data-tab="explain" aria-selected="false">
+          Model Explainability
+        </button>
+        <button type="button" role="tab" class="tab-btn" data-tab="library" aria-selected="false">
+          Course Library
+        </button>
+        <button type="button" role="tab" class="tab-btn" data-tab="drift" aria-selected="false">
+          Drift &amp; Retraining
+        </button>
+      </nav>
+
+      <div class="header-meta">
+        <span id="live-pill" class="meta-model">random_forest_baseline_v2</span>
+        <a id="grafana-link" class="meta-link" href="http://localhost:3000/d/student-perf-mlops" target="_blank" rel="noopener">Grafana</a>
+        <a id="alerts-link" class="meta-link" href="http://localhost:9090/alerts" target="_blank" rel="noopener">Prometheus</a>
+        <a class="meta-link" href="/docs" target="_blank" rel="noopener">API</a>
+      </div>
+    </div>
+  </header>
+
+  <main class="container">
+    <!-- =================================================================== -->
+    <!-- SECTION 1: TUTOR & STUDENT ASSESSMENT                               -->
+    <!-- =================================================================== -->
+    <section id="tab-tutor" class="tab-view active-view" aria-label="Tutor and Assessment">
+      <div class="tutor-layout">
+        <!-- Left Pane: Clean Student Telemetry Check-In -->
+        <div class="card">
+          <div class="section-head">
+            <div>
+              <h2>Student Check-In</h2>
+              <p class="muted">Evaluate a problem attempt across the 11 ASSISTments features.</p>
+            </div>
+          </div>
+
+          <div class="segmented" role="group" aria-label="Student profile presets">
+            <button type="button" class="seg-btn" data-preset="mastery">Mastery</button>
+            <button type="button" class="seg-btn active" data-preset="struggling">Struggling</button>
+            <button type="button" class="seg-btn" data-preset="rapid">Rapid Guess</button>
+          </div>
+
+          <form id="telemetry-form" class="clean-form" novalidate>
+            <label class="field span-2">
+              <span>Topic module</span>
+              <select id="t-skill">
+                <option value="phishing_cyber_hygiene">Phishing &amp; Cyber Hygiene</option>
+                <option value="source_credibility">Evaluating Source Credibility</option>
+                <option value="digital_privacy">Protecting Digital Privacy</option>
+                <option value="search_strategies">Effective Search Strategies</option>
+                <option value="software_navigation">Navigating Software</option>
+              </select>
+            </label>
+
+            <label class="field">
+              <span>Attempts</span>
+              <input id="t-attempts" type="number" min="1" max="50" step="1" value="5">
+            </label>
+            <label class="field">
+              <span>Hints used</span>
+              <input id="t-hints" type="number" min="0" max="20" step="1" value="3">
+            </label>
+
+            <label class="field">
+              <span>Response time (s)</span>
+              <input id="t-rt-sec" type="number" min="0.1" max="600" step="any" value="40">
+            </label>
+            <label class="field">
+              <span>Prior accuracy (0–1)</span>
+              <input id="t-prev-acc" type="number" min="0" max="1" step="any" value="0.25">
+            </label>
+
+            <label class="field">
+              <span>Item pass rate (0–1)</span>
+              <input id="t-prob-diff" type="number" min="0.01" max="0.99" step="any" value="0.28">
+            </label>
+            <label class="field">
+              <span>Skill pass rate (0–1)</span>
+              <input id="t-skill-diff" type="number" min="0.01" max="0.99" step="any" value="0.38">
+            </label>
+
+            <label class="field">
+              <span>Practice count</span>
+              <input id="t-opp" type="number" min="1" max="200" step="1" value="1">
+            </label>
+            <label class="field check-row">
+              <input id="t-bottom-hint" type="checkbox" checked>
+              <span>Bottom-out hint viewed</span>
+            </label>
+
+            <label class="field check-row span-2">
+              <input id="t-auto-intervene" type="checkbox" checked>
+              <span>Automatically start Socratic tutor when intervention is needed</span>
+            </label>
+
+            <button id="score-btn" type="submit" class="btn-solid span-2">Evaluate Attempt</button>
+          </form>
+
+          <div id="predict-result" class="verdict-box" hidden>
+            <div class="verdict-row">
+              <div class="status-line">
+                <span id="verdict-dot" class="dot"></span>
+                <strong id="predict-badge">—</strong>
+              </div>
+              <span id="predict-prob" class="mono">—</span>
+            </div>
+
+            <div class="bar-track" aria-hidden="true">
+              <div id="prob-fill" class="bar-fill"></div>
+              <div class="bar-mid" title="50% decision threshold"></div>
+            </div>
+
+            <p id="xai-summary" class="verdict-copy"></p>
+
+            <div class="verdict-footer">
+              <button type="button" id="open-xai-btn" class="link-btn">Inspect all 11 feature attributions →</button>
+              <div class="outcome-btns">
+                <span class="muted-xs">Log outcome:</span>
+                <button type="button" id="fb-correct" class="btn-xs">Solved (1)</button>
+                <button type="button" id="fb-struggle" class="btn-xs">Struggled (0)</button>
+              </div>
+            </div>
+            <p id="fb-status" class="note" role="status"></p>
+          </div>
+        </div>
+
+        <!-- Right Pane: Socratic RAG Conversation -->
+        <div class="card chat-card">
+          <div class="section-head split-head">
+            <div>
+              <div class="eyebrow-row">
+                <span class="muted-xs">Active source:</span>
+                <strong id="title">Digital literacy</strong>
+              </div>
+              <p id="context-bar" class="muted">Balanced Socratic guidance — evaluate an attempt on the left to adapt depth.</p>
+            </div>
+            <div class="head-actions">
+              <button type="button" id="switch-lib-btn" class="btn-outline btn-xs">Change source / PDF</button>
+              <button type="button" id="reset" class="btn-outline btn-xs" hidden>New chat</button>
+            </div>
+          </div>
+
+          <div id="conversation" class="chat-stream" role="log" aria-label="Tutor conversation" aria-live="polite"></div>
+
+          <div id="welcome" class="chat-placeholder">
+            <h3>Socratic Digital Literacy Tutor</h3>
+            <p class="muted">
+              Grounded in the 5-module curriculum and any uploaded course PDFs. Guides students with questions rather than giving direct quiz answers, citing supporting passages inline as <code>[1]</code>, <code>[2]</code>.
+            </p>
+            <div id="starters" class="starter-list" aria-label="Suggested prompts"></div>
+          </div>
+
+          <div class="chat-composer">
+            <form id="ask" class="ask-row">
+              <label for="question" class="sr-only">Your question</label>
+              <textarea id="question" rows="2" maxlength="4000" placeholder="Ask a question about the active source…" required></textarea>
+              <button type="submit" id="send" class="btn-solid">Send</button>
+            </form>
+            <p id="ask-status" class="note" role="status"></p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- =================================================================== -->
+    <!-- SECTION 2: MODEL EXPLAINABILITY (SHAPLEY + GLOBAL + FAIRNESS)       -->
+    <!-- =================================================================== -->
+    <section id="tab-explain" class="tab-view" aria-label="Model Explainability" hidden>
+      <div class="stack">
+        <div class="card">
+          <div class="section-head split-head">
+            <div>
+              <h2>Local Prediction Attribution (Shapley Decomposition)</h2>
+              <p class="muted">
+                Exact Monte-Carlo Shapley decomposition showing how each of the 11 features shifted <code>P(correct)</code> from the healthy student baseline to the final prediction.
+              </p>
+            </div>
+            <span id="xai-equation" class="mono-badge">Score an attempt in Tutor &amp; Assessment to populate</span>
+          </div>
+
+          <div id="xai-full-empty" class="empty-state">
+            Click <strong>Evaluate Attempt</strong> in the <em>Tutor &amp; Assessment</em> tab to compute local Shapley attributions across all 11 features.
+          </div>
+
+          <div id="xai-full-content" hidden>
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Feature</th>
+                  <th>Student Value</th>
+                  <th>Healthy Baseline</th>
+                  <th>Shapley Shift (ΔP)</th>
+                  <th style="width:220px">Contribution</th>
+                  <th>Interpretation</th>
+                </tr>
+              </thead>
+              <tbody id="xai-full-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="two-col">
+          <div class="card">
+            <div class="section-head">
+              <h2>Global Feature Importance (Random Forest)</h2>
+              <p class="muted">Mean decrease in Gini impurity across the 80,000-row training partition.</p>
+            </div>
+            <div id="global-imp-list" class="imp-list"></div>
+          </div>
+
+          <div class="card">
+            <div class="section-head">
+              <h2>Subgroup Fairness &amp; Offline Benchmark</h2>
+              <p class="muted">Held-out 20,000-sample verification across key learner subpopulations (42-check gate).</p>
+            </div>
+            <div id="benchmark-kpis" class="mini-kpis"></div>
+            <table class="data-table compact-table">
+              <thead>
+                <tr>
+                  <th>Learner Subgroup Slice</th>
+                  <th>Samples</th>
+                  <th>F1</th>
+                  <th>Macro-F1</th>
+                  <th>ROC-AUC</th>
+                </tr>
+              </thead>
+              <tbody id="slices-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- =================================================================== -->
+    <!-- SECTION 3: COURSE LIBRARY & PDF INGESTION                           -->
+    <!-- =================================================================== -->
+    <section id="tab-library" class="tab-view" aria-label="Course Library" hidden>
+      <div class="two-col library-grid">
+        <div class="card">
+          <div class="section-head">
+            <h2>Upload Course PDF</h2>
+            <p class="muted">
+              Extracts text page-by-page with <code>pypdf</code> and indexes 512-token chunks locally into ChromaDB using CPU-only ONNX <code>all-MiniLM-L6-v2</code> embeddings.
+            </p>
+          </div>
+
+          <div class="upload-box">
+            <p><strong>Text-based PDF</strong> · up to 10 MiB and 200 pages</p>
+            <p class="muted-xs">Content-addressed by SHA-256; duplicate uploads reuse the existing collection.</p>
+            <button id="upload" type="button" class="btn-solid">Choose PDF File</button>
+            <input id="file" type="file" accept="application/pdf,.pdf" hidden>
+          </div>
+          <p id="file-status" class="note" role="status"></p>
+        </div>
+
+        <div class="card">
+          <div class="section-head">
+            <h2>Available Study Sources</h2>
+            <p class="muted">Select a source below to ground the Socratic tutor.</p>
+          </div>
+          <nav id="library" class="source-list" aria-label="Study sources"></nav>
+        </div>
+      </div>
+    </section>
+
+    <!-- =================================================================== -->
+    <!-- SECTION 4: DRIFT MONITORING & AUTOMATED RETRAINING                  -->
+    <!-- =================================================================== -->
+    <section id="tab-drift" class="tab-view" aria-label="Drift and Retraining" hidden>
+      <div class="stack">
+        <div class="kpi-row">
+          <div class="card kpi-card">
+            <span class="kpi-label">Active Window / Total Logged</span>
+            <strong id="stat-rows" class="kpi-value">0 / 0</strong>
+            <span class="muted-xs">Persisted in <code>data/live/interactions.csv</code></span>
+          </div>
+          <div class="card kpi-card">
+            <span class="kpi-label">Covariate Drift Share</span>
+            <strong id="stat-drift" class="kpi-value">0% (0/11)</strong>
+            <span class="muted-xs">Two-sample KS test (threshold ≥ 30%)</span>
+          </div>
+          <div class="card kpi-card">
+            <span class="kpi-label">Model / Concept Drift</span>
+            <strong id="stat-mdrift" class="kpi-value">OK</strong>
+            <span class="muted-xs">F1 or Class-0 recall drop ≥ 5%</span>
+          </div>
+          <div class="card kpi-card">
+            <span class="kpi-label">Retrain Cycles &amp; Gate</span>
+            <strong id="stat-retrains" class="kpi-value">0 · 42/42</strong>
+            <span class="muted-xs">Zero-downtime swap via <code>/model/reload</code></span>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="toolbar">
+            <div class="toolbar-group">
+              <span class="muted-xs">1. Traffic / Window:</span>
+              <button type="button" class="btn-outline sim-btn" data-profile="normal" data-count="80">+80 Normal</button>
+              <button type="button" class="btn-outline sim-btn" data-profile="struggling" data-count="80">+80 Struggling</button>
+              <button type="button" class="btn-outline sim-btn" data-profile="drifted" data-count="120">+120 Drifted Cohort</button>
+              <button type="button" id="check-drift-btn" class="btn-outline" title="Evaluate drift on manual attempts logged in Tutor & Assessment (min 5 rows)">Check Manual Window</button>
+            </div>
+
+            <div class="toolbar-group">
+              <span class="muted-xs">2. Model Lifecycle:</span>
+              <button type="button" id="retrain-btn" class="btn-solid">Retrain &amp; Hot-Reload</button>
+              <button type="button" id="rollback-btn" class="btn-outline">Rollback to v2</button>
+              <button type="button" id="reset-demo-btn" class="btn-outline">Reset Window</button>
+            </div>
+          </div>
+
+          <div id="drift-explainer" class="callout">
+            <span id="drift-dot" class="dot"></span>
+            <div class="callout-body">
+              <strong id="drift-headline">Ready — Active Window Clean</strong>
+              <p id="drift-explainer-text">
+                Inject a batch above (or log ≥5 manual attempts in <em>Tutor &amp; Assessment</em> and click <strong>Check Manual Window</strong>) to run two-sample KS and concept drift tests.
+              </p>
+            </div>
+          </div>
+          <p id="mlops-error" class="note error-note" role="alert"></p>
+
+          <div class="table-meta-row">
+            <span class="muted-xs" id="drift-table-caption">Feature distribution comparison (Active Window vs Active Reference)</span>
+          </div>
+
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Feature</th>
+                <th>Description</th>
+                <th>Reference Mean</th>
+                <th>Live Window Mean</th>
+                <th>Shift (Δ)</th>
+                <th>KS Statistic</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody id="drift-tbody">
+              <tr><td colspan="7" class="empty-cell">Inject a traffic batch above to inspect per-feature KS statistics across all 11 features.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

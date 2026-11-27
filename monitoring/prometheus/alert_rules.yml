@@ -1,16 +1,15 @@
 groups:
   - name: student_predictor_alerts
     rules:
-      # ── High error rate ────────────────────────────────────────────────────
-      - alert: HighPredictionErrorRate
-        expr: |
-          rate(prediction_errors_total[5m]) > 0.05
-        for: 2m
+      # ── API down ───────────────────────────────────────────────────────────
+      - alert: APIDown
+        expr: up{job="student-predictor-api"} == 0
+        for: 1m
         labels:
-          severity: warning
+          severity: critical
         annotations:
-          summary: "High prediction error rate"
-          description: "Prediction errors > 5% over the past 5 minutes."
+          summary: "Prediction API is down"
+          description: "Prometheus cannot scrape the Student Performance Predictor API."
 
       # ── Model not loaded ───────────────────────────────────────────────────
       - alert: ModelNotLoaded
@@ -22,36 +21,47 @@ groups:
           summary: "ML model is not loaded"
           description: "The prediction model has not been loaded for > 1 minute."
 
+      # ── Quality gate failed ────────────────────────────────────────────────
+      - alert: QualityGateFailed
+        expr: quality_gate_passed == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Model-Risk Quality Gate failed"
+          description: "The active or retrained model failed one or more of the 42 quality-gate checks."
+
+      # ── High error rate ────────────────────────────────────────────────────
+      - alert: HighPredictionErrorRate
+        expr: |
+          sum(rate(prediction_errors_total[5m])) > 0.05
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High prediction error rate"
+          description: "Prediction error rate exceeded 0.05 req/s over the past 5 minutes."
+
       # ── Slow predictions ───────────────────────────────────────────────────
       - alert: SlowPredictions
         expr: |
-          histogram_quantile(0.95, rate(prediction_latency_seconds_bucket[5m])) > 1.0
+          histogram_quantile(0.95, sum(rate(prediction_latency_seconds_bucket[5m])) by (le)) > 1.0
         for: 5m
         labels:
           severity: warning
         annotations:
           summary: "95th-percentile prediction latency > 1 second"
-          description: "Predictions are unusually slow — check for model or resource issues."
-
-      # ── API down ───────────────────────────────────────────────────────────
-      - alert: APIDown
-        expr: up{job="student-predictor-api"} == 0
-        for: 1m
-        labels:
-          severity: critical
-        annotations:
-          summary: "Prediction API is down"
-          description: "Prometheus cannot scrape the Student Performance Predictor API."
+          description: "Predictions are unusually slow — check model or container resources."
 
       # ── Data drift detected ────────────────────────────────────────────────
       - alert: HighDataDriftDetected
-        expr: data_drift_share >= 0.3
+        expr: data_drift_share >= 0.3 or dataset_drifted == 1
         for: 1m
         labels:
           severity: warning
         annotations:
           summary: "High feature data drift detected (>= 30%)"
-          description: "Evidently/monitoring detected >= 30% drifted features; trigger retraining."
+          description: "Monitoring detected >= 30% drifted features across the 11 engineered features; trigger retraining."
 
       # ── Model / concept drift detected ─────────────────────────────────────
       - alert: ModelPerformanceDegraded
@@ -61,4 +71,24 @@ groups:
           severity: critical
         annotations:
           summary: "Model performance drift detected"
-          description: "Model F1 or struggling-student recall dropped past threshold; retrain required."
+          description: "Model F1 or struggling-student Class-0 recall dropped past threshold; retraining required."
+
+      # ── High live student intervention rate ────────────────────────────────
+      - alert: HighInterventionRate
+        expr: live_needs_intervention_ratio > 0.65 and sum(predictions_scored_total) >= 20
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High struggling-student intervention rate (> 65%)"
+          description: "More than 65% of live student attempts are being flagged for tutor intervention."
+
+      # ── Downstream RAG tutor errors ────────────────────────────────────────
+      - alert: TutorEndpointErrors
+        expr: sum(increase(tutor_errors_total[5m])) >= 1
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "RAG Tutor endpoint errors detected"
+          description: "One or more /tutor/ask or /tutor/documents errors occurred in the last 5 minutes."

@@ -355,7 +355,9 @@ jobs:
           done
 
           curl -sf http://localhost:8001/openapi.json | python3 -c \
-            "import json,sys; p=json.load(sys.stdin)['paths']; assert '/tutor/ask' in p and '/tutor/index' in p, p.keys()"
+            "import json,sys; p=json.load(sys.stdin)['paths']; assert {'/tutor/ask','/tutor/index','/tutor/documents'} <= p.keys(), p.keys()"
+          curl -fsSL http://localhost:8001/tutor/ | grep -q 'Study room'
+          curl -fsS http://localhost:8001/tutor/assets/study.js -o /dev/null
 
           # Without a key the tutor must fail hard (HTTP 500), never return a canned answer.
           CODE=$(curl -s -o /tmp/tutor.json -w '%{http_code}' -X POST http://localhost:8001/tutor/ask \

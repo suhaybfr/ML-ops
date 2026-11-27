@@ -1,6 +1,6 @@
 global:
-  scrape_interval: 15s
-  evaluation_interval: 15s
+  scrape_interval: 5s
+  evaluation_interval: 5s
   external_labels:
     monitor: 'student-performance-mlops'
 
@@ -18,8 +18,8 @@ scrape_configs:
     static_configs:
       - targets: ['api:8000']
     metrics_path: '/metrics'
-    scrape_interval: 10s
-    scrape_timeout: 5s
+    scrape_interval: 5s
+    scrape_timeout: 4s
 
   # ── Prometheus self-monitoring ─────────────────────────────────────────────
   - job_name: 'prometheus'

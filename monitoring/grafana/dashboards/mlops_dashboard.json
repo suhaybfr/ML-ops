@@ -1,104 +1,383 @@
 {
-  "title": "Student Performance Predictor — MLOps Dashboard",
+  "title": "AI Digital Literacy Assistant — Full MLOps Pipeline Dashboard",
+  "description": "End-to-end observability across FastAPI serving, 42-check Champion Quality Gate, 11-feature KS Data/Model Drift, Automated Retraining, and Socratic RAG Tutor.",
   "uid": "student-perf-mlops",
   "timezone": "browser",
   "schemaVersion": 38,
-  "version": 1,
-  "refresh": "10s",
-  "tags": ["mlops", "prediction", "svm"],
+  "version": 4,
+  "refresh": "5s",
+  "tags": ["mlops", "random-forest", "drift", "retrain", "rag-tutor", "xai"],
   "panels": [
     {
+      "id": 100,
+      "type": "row",
+      "title": "Row 1 — Pipeline & Service Health",
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 0},
+      "collapsed": false
+    },
+    {
       "id": 1,
-      "title": "Model Status",
+      "title": "API Status",
+      "description": "1 = FastAPI inference container is healthy and scraped by Prometheus.",
       "type": "stat",
-      "gridPos": {"h": 4, "w": 4, "x": 0, "y": 0},
-      "targets": [
-        {
-          "expr": "model_loaded",
-          "legendFormat": "Model Loaded"
-        }
-      ],
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 4, "w": 4, "x": 0, "y": 1},
+      "targets": [{"datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "up{job=\"student-predictor-api\"}", "legendFormat": "API"}],
       "fieldConfig": {
         "defaults": {
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {"color": "red", "value": 0},
-              {"color": "green", "value": 1}
-            ]
-          },
-          "mappings": [
-            {"options": {"0": {"text": "❌ Not Loaded"}, "1": {"text": "✅ Ready"}}, "type": "value"}
-          ]
+          "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": 0}, {"color": "green", "value": 1}]},
+          "mappings": [{"type": "value", "options": {"0": {"text": "DOWN"}, "1": {"text": "UP"}}}]
         }
       }
     },
     {
       "id": 2,
-      "title": "Requests per Second",
-      "type": "timeseries",
-      "gridPos": {"h": 8, "w": 10, "x": 4, "y": 0},
-      "targets": [
-        {
-          "expr": "rate(prediction_requests_total[1m])",
-          "legendFormat": "{{endpoint}} - {{result}}"
+      "title": "Model Loaded",
+      "description": "1 = Champion or hot-reloaded Random Forest model is in memory.",
+      "type": "stat",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 4, "w": 4, "x": 4, "y": 1},
+      "targets": [{"datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "model_loaded", "legendFormat": "Model"}],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": 0}, {"color": "green", "value": 1}]},
+          "mappings": [{"type": "value", "options": {"0": {"text": "NOT LOADED"}, "1": {"text": "READY"}}}]
         }
-      ]
+      }
     },
     {
       "id": 3,
-      "title": "P50 / P95 / P99 Latency",
-      "type": "timeseries",
-      "gridPos": {"h": 8, "w": 10, "x": 14, "y": 0},
-      "targets": [
-        {
-          "expr": "histogram_quantile(0.50, rate(prediction_latency_seconds_bucket[5m]))",
-          "legendFormat": "p50"
-        },
-        {
-          "expr": "histogram_quantile(0.95, rate(prediction_latency_seconds_bucket[5m]))",
-          "legendFormat": "p95"
-        },
-        {
-          "expr": "histogram_quantile(0.99, rate(prediction_latency_seconds_bucket[5m]))",
-          "legendFormat": "p99"
-        }
-      ]
+      "title": "Active Model Version",
+      "description": "Currently active model version (updates automatically on zero-downtime POST /model/reload).",
+      "type": "stat",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 4, "w": 6, "x": 8, "y": 1},
+      "targets": [{"datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "model_info_active == 1", "legendFormat": "{{model_version}} ({{model_type}})"}],
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "name"}
     },
     {
       "id": 4,
-      "title": "Total Predictions (all time)",
+      "title": "Quality Gate Checks Passed",
+      "description": "Model-Risk Quality Gate checks passed (37 offline + 5 live artifact checks = 42 total).",
       "type": "stat",
-      "gridPos": {"h": 4, "w": 4, "x": 0, "y": 4},
-      "targets": [
-        {
-          "expr": "sum(prediction_requests_total)",
-          "legendFormat": "Total"
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 4, "w": 5, "x": 14, "y": 1},
+      "targets": [{"datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "quality_gate_checks_passed", "legendFormat": "Checks Passed"}],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": 0}, {"color": "green", "value": 37}]}
         }
-      ]
+      }
     },
     {
       "id": 5,
-      "title": "Error Rate",
-      "type": "timeseries",
-      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
-      "targets": [
-        {
-          "expr": "rate(prediction_errors_total[5m])",
-          "legendFormat": "{{endpoint}} - {{error_type}}"
+      "title": "Live Interactions Logged",
+      "description": "Cumulative student interactions persisted in data/live/interactions.csv.",
+      "type": "stat",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 4, "w": 5, "x": 19, "y": 1},
+      "targets": [{"datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "live_interactions_logged_total", "legendFormat": "Logged Rows"}],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {"mode": "absolute", "steps": [{"color": "blue", "value": 0}, {"color": "green", "value": 50}]}
         }
-      ]
+      }
+    },
+
+    {
+      "id": 200,
+      "type": "row",
+      "title": "Row 2 — Champion Model Quality (Offline Gate)",
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 5},
+      "collapsed": false
     },
     {
       "id": 6,
-      "title": "Batch Size Distribution",
-      "type": "histogram",
-      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
-      "targets": [
-        {
-          "expr": "rate(batch_prediction_size_bucket[10m])",
-          "legendFormat": "{{le}}"
+      "title": "Accuracy",
+      "type": "stat",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 4, "w": 4, "x": 0, "y": 6},
+      "targets": [{"datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "champion_offline_metric{metric=\"accuracy\"}", "legendFormat": "Accuracy"}],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 2,
+          "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": 0}, {"color": "green", "value": 0.92}]}
         }
+      }
+    },
+    {
+      "id": 7,
+      "title": "F1-Score",
+      "type": "stat",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 4, "w": 4, "x": 4, "y": 6},
+      "targets": [{"datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "champion_offline_metric{metric=\"f1_score\"}", "legendFormat": "F1"}],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 2,
+          "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": 0}, {"color": "green", "value": 0.94}]}
+        }
+      }
+    },
+    {
+      "id": 8,
+      "title": "ROC-AUC",
+      "type": "stat",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 4, "w": 4, "x": 8, "y": 6},
+      "targets": [{"datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "champion_offline_metric{metric=\"roc_auc\"}", "legendFormat": "ROC-AUC"}],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 2,
+          "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": 0}, {"color": "green", "value": 0.96}]}
+        }
+      }
+    },
+    {
+      "id": 9,
+      "title": "MCC",
+      "type": "stat",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 4, "w": 4, "x": 12, "y": 6},
+      "targets": [{"datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "champion_offline_metric{metric=\"mcc\"}", "legendFormat": "MCC"}],
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 4,
+          "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": 0}, {"color": "green", "value": 0.84}]}
+        }
+      }
+    },
+    {
+      "id": 10,
+      "title": "Brier Calibration (lower=better)",
+      "type": "stat",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 4, "w": 4, "x": 16, "y": 6},
+      "targets": [{"datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "champion_offline_metric{metric=\"brier_score\"}", "legendFormat": "Brier"}],
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 4,
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": 0}, {"color": "red", "value": 0.08}]}
+        }
+      }
+    },
+    {
+      "id": 11,
+      "title": "Class-0 Struggling Recall",
+      "type": "stat",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 4, "w": 4, "x": 20, "y": 6},
+      "targets": [{"datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "champion_offline_metric{metric=\"class0_recall\"}", "legendFormat": "Class-0 Recall"}],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 2,
+          "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": 0}, {"color": "green", "value": 0.80}]}
+        }
+      }
+    },
+
+    {
+      "id": 300,
+      "type": "row",
+      "title": "Row 3 — Live Serving & Student Telemetry",
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 10},
+      "collapsed": false
+    },
+    {
+      "id": 12,
+      "title": "Prediction Requests / sec",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 7, "w": 8, "x": 0, "y": 11},
+      "targets": [{"datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "rate(prediction_requests_total[1m])", "legendFormat": "{{endpoint}} ({{result}})"}]
+    },
+    {
+      "id": 13,
+      "title": "P50 / P95 / P99 Latency (s)",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 7, "w": 8, "x": 8, "y": 11},
+      "targets": [
+        {"datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "histogram_quantile(0.50, sum(rate(prediction_latency_seconds_bucket[5m])) by (le))", "legendFormat": "p50"},
+        {"datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "histogram_quantile(0.95, sum(rate(prediction_latency_seconds_bucket[5m])) by (le))", "legendFormat": "p95"},
+        {"datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "histogram_quantile(0.99, sum(rate(prediction_latency_seconds_bucket[5m])) by (le))", "legendFormat": "p99"}
+      ]
+    },
+    {
+      "id": 14,
+      "title": "Live Needs-Intervention Rate",
+      "type": "gauge",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 7, "w": 4, "x": 16, "y": 11},
+      "targets": [{"datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "live_needs_intervention_ratio", "legendFormat": "Intervention %"}],
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "max": 1,
+          "unit": "percentunit",
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": 0}, {"color": "yellow", "value": 0.45}, {"color": "red", "value": 0.65}]}
+        }
+      }
+    },
+    {
+      "id": 15,
+      "title": "Prediction Error Rate",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 7, "w": 4, "x": 20, "y": 11},
+      "targets": [{"datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "rate(prediction_errors_total[5m])", "legendFormat": "{{endpoint}} - {{error_type}}"}]
+    },
+    {
+      "id": 16,
+      "title": "Predicted P(correct=1) Distribution",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 6, "w": 12, "x": 0, "y": 18},
+      "targets": [{"datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "sum(increase(prediction_probability_bucket[10m])) by (le)", "legendFormat": "le={{le}}"}]
+    },
+    {
+      "id": 17,
+      "title": "Batch Prediction Sizes",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 6, "w": 12, "x": 12, "y": 18},
+      "targets": [{"datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "sum(increase(batch_prediction_size_bucket[10m])) by (le)", "legendFormat": "le={{le}}"}]
+    },
+
+    {
+      "id": 400,
+      "type": "row",
+      "title": "Row 4 — Data & Model Drift + Alerts",
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 24},
+      "collapsed": false
+    },
+    {
+      "id": 18,
+      "title": "Dataset Drift Share",
+      "description": "Fraction of 11 features whose live distribution differs significantly from the active reference (KS p<0.05 & stat>=0.10). Threshold >= 30% triggers retraining.",
+      "type": "gauge",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 7, "w": 5, "x": 0, "y": 25},
+      "targets": [{"datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "data_drift_share", "legendFormat": "Drift Share"}],
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "max": 1,
+          "unit": "percentunit",
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": 0}, {"color": "yellow", "value": 0.2}, {"color": "red", "value": 0.3}]}
+        }
+      }
+    },
+    {
+      "id": 19,
+      "title": "Drifted Features (of 11)",
+      "type": "stat",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 7, "w": 3, "x": 5, "y": 25},
+      "targets": [{"datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "drifted_features_count", "legendFormat": "Drifted"}],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": 0}, {"color": "yellow", "value": 2}, {"color": "red", "value": 4}]}
+        }
+      }
+    },
+    {
+      "id": 20,
+      "title": "Per-Feature KS Drift Scores (11 Features)",
+      "type": "bargauge",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 7, "w": 8, "x": 8, "y": 25},
+      "targets": [{"datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "feature_drift_score", "legendFormat": "{{feature}}"}],
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "max": 1,
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": 0}, {"color": "yellow", "value": 0.1}, {"color": "red", "value": 0.25}]}
+        }
+      }
+    },
+    {
+      "id": 21,
+      "title": "Classification Drift (F1 Drop & Flag)",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 7, "w": 4, "x": 16, "y": 25},
+      "targets": [
+        {"datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "model_drift_f1_drop", "legendFormat": "F1 Drop"},
+        {"datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "model_drift_class0_recall_drop", "legendFormat": "Class-0 Recall Drop"},
+        {"datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "model_drift_detected", "legendFormat": "Drift Flag"}
+      ]
+    },
+    {
+      "id": 22,
+      "title": "Firing Prometheus Alerts",
+      "type": "stat",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 7, "w": 4, "x": 20, "y": 25},
+      "targets": [{"datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "count(ALERTS{alertstate=\"firing\"}) or vector(0)", "legendFormat": "Firing Alerts"}],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": 0}, {"color": "red", "value": 1}]}
+        }
+      }
+    },
+
+    {
+      "id": 500,
+      "type": "row",
+      "title": "Row 5 — Automated Retraining & RAG Tutor",
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 32},
+      "collapsed": false
+    },
+    {
+      "id": 23,
+      "title": "Retrain Runs & Promotions",
+      "type": "stat",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 6, "w": 5, "x": 0, "y": 33},
+      "targets": [
+        {"datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "retrain_runs_total", "legendFormat": "Retrain Runs"},
+        {"datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "retrain_promotions_total", "legendFormat": "Promotions"}
+      ]
+    },
+    {
+      "id": 24,
+      "title": "Tutor /tutor/ask RPS",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 6, "w": 6, "x": 5, "y": 33},
+      "targets": [{"datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "rate(tutor_requests_total[5m])", "legendFormat": "{{source_type}} - {{status}}"}]
+    },
+    {
+      "id": 25,
+      "title": "Tutor P95 Latency (s)",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 6, "w": 5, "x": 11, "y": 33},
+      "targets": [{"datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "histogram_quantile(0.95, sum(rate(tutor_latency_seconds_bucket[5m])) by (le))", "legendFormat": "Tutor p95"}]
+    },
+    {
+      "id": 26,
+      "title": "Tutor Errors (5m)",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 6, "w": 4, "x": 16, "y": 33},
+      "targets": [{"datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "increase(tutor_errors_total[5m])", "legendFormat": "{{error_type}}"}]
+    },
+    {
+      "id": 27,
+      "title": "Tutor Indexed Docs & Chunks",
+      "type": "stat",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 6, "w": 4, "x": 20, "y": 33},
+      "targets": [
+        {"datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "tutor_indexed_documents_total", "legendFormat": "Docs"},
+        {"datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "tutor_indexed_chunks_total", "legendFormat": "Chunks"}
       ]
     }
   ]

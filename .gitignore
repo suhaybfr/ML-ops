@@ -19,8 +19,11 @@ chroma_db/
 # Jupyter notebook checkpoints
 .ipynb_checkpoints/
 
-# Drift reports (generated artifacts — not source-controlled)
+# Drift reports & live telemetry buffers (generated artifacts — not source-controlled)
 reports/drift/
+data/live/
+models/retrained_*.pkl
+models/challenger_*.pkl
 
 # Coverage reports
 coverage.xml

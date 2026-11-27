@@ -55,7 +55,8 @@ docs/
 *.md
 data/
 monitoring/
-reports/
+reports/*
+!reports/baseline_metrics.json
 
 # Phase 3 tutor: ship course documents, but never the local vector store
 !docs/

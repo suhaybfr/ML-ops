@@ -53,7 +53,7 @@ def struggling_payload() -> dict:
 
 
 @pytest.fixture
-def client(monkeypatch):
+def client(monkeypatch, tmp_path):
     """Create a FastAPI TestClient bound to canonical ``app.main``."""
     from fastapi.testclient import TestClient
 
@@ -61,6 +61,8 @@ def client(monkeypatch):
 
     # Keep alias for any test importing `main` directly
     sys.modules["main"] = app_main
+    monkeypatch.setenv("LIVE_INTERACTIONS_PATH", str(tmp_path / "live" / "interactions.csv"))
+    monkeypatch.setenv("DRIFT_REPORTS_DIR", str(tmp_path / "drift"))
     monkeypatch.setattr(app_main, "MODEL_PATH", app_main.DEFAULT_MODEL_PATH)
     monkeypatch.setattr(app_main, "MLFLOW_MODEL_URI", "")
     app_main.reset_model_cache()

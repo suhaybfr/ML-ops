@@ -17,6 +17,7 @@ cloudpickle
 # Phase 3 conversational tutor (app/tutor.py) — CPU-only, no PyTorch/CUDA:
 # ChromaDB embedded store + its bundled ONNX all-MiniLM-L6-v2 embeddings, Gemini LLM.
 chromadb>=1.0.0
+pypdf>=5.0.0
 llama-index-core>=0.12.0
 llama-index-vector-stores-chroma>=0.4.0
 llama-index-llms-google-genai>=0.11.0

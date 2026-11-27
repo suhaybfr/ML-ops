@@ -8,6 +8,8 @@ No network access or real ``GOOGLE_API_KEY`` is required:
 
 from __future__ import annotations
 
+from io import BytesIO
+
 import pytest
 
 pytest.importorskip("chromadb")
@@ -184,3 +186,121 @@ def test_instructional_plan_adapts_to_telemetry():
     progressing = tutor._instructional_plan({"attempt_count": 1, "hint_count": 0})
     assert "progressing" in progressing
     assert "No telemetry" in tutor._instructional_plan({})
+
+
+def course_pdf(*pages, password=None):
+    """Generate a real PDF, including blank pages, without a fixture binary."""
+    from pypdf import PdfWriter
+    from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
+
+    writer = PdfWriter()
+    for text in pages:
+        page = writer.add_blank_page(width=400, height=400)
+        if text:
+            font = DictionaryObject(
+                {
+                    NameObject("/Type"): NameObject("/Font"),
+                    NameObject("/Subtype"): NameObject("/Type1"),
+                    NameObject("/BaseFont"): NameObject("/Helvetica"),
+                }
+            )
+            page[NameObject("/Resources")] = DictionaryObject(
+                {NameObject("/Font"): DictionaryObject({NameObject("/F1"): font})}
+            )
+            stream = DecodedStreamObject()
+            stream.set_data(f"BT /F1 12 Tf 20 350 Td ({text}) Tj ET".encode("ascii"))
+            page[NameObject("/Contents")] = writer._add_object(stream)
+    if password:
+        writer.encrypt(password)
+    buf = BytesIO()
+    writer.write(buf)
+    return buf.getvalue()
+
+
+def upload(client, data, filename="lecture.pdf"):
+    return client.post(
+        "/tutor/documents",
+        params={"filename": filename},
+        content=data,
+        headers={"content-type": "application/pdf"},
+    )
+
+
+def test_pdf_library_to_grounded_answer_preserves_socratic_prompt(tutor_client, fake_llm):
+    data = course_pdf("", "Chlorophyll absorbs light during photosynthesis.")
+    first = upload(tutor_client, data)
+    assert first.status_code == 200, first.text
+    book = first.json()
+    assert (book["pages"], book["pages_indexed"], book["chunks"]) == (2, 1, 1)
+    assert upload(tutor_client, data, "renamed.pdf").json() == book
+
+    other = upload(tutor_client, course_pdf("A separate geometry lecture."))
+    assert other.json()["id"] != book["id"]
+    tutor.reset_store()
+    assert len(tutor_client.get("/tutor/documents").json()) == 2
+
+    res = tutor_client.post(
+        "/tutor/ask",
+        json={
+            "document_id": book["id"],
+            "question": "What absorbs light?",
+            "student_context": STRUGGLING_CONTEXT,
+            "history": [
+                {"question": "What is a pigment?", "answer": "Think about leaf colour."}
+            ],
+        },
+    )
+    assert res.status_code == 200, res.text
+    (src,) = res.json()["sources"]
+    assert (src["page"], src["source"]) == (2, "lecture.pdf")
+    assert "Chlorophyll" in src["text"]
+
+    # System prompt MUST retain core Socratic anti-answer-leakage rules even for PDFs
+    system_msg = fake_llm.calls[-1][0].content
+    assert "NEVER give away the direct answer" in system_msg
+    assert "selected course PDF" in system_msg
+
+    prompt = fake_llm.calls[-1][-1].content
+    assert "Chlorophyll" in prompt and "page 2" in prompt and "geometry" not in prompt
+    assert "STRUGGLING" in prompt
+    assert fake_llm.calls[-1][1].content == "What is a pigment?"
+    assert (
+        tutor_client.post("/tutor/ask", json={"question": "Test", "document_id": "a" * 64})
+        .status_code
+        == 404
+    )
+
+
+def test_upload_rejects_unusable_and_unsafe_filenames(tutor_client, monkeypatch):
+    assert upload(tutor_client, b"hello").status_code == 415
+    assert upload(tutor_client, b"%PDF-unreadable").status_code == 422
+    assert upload(tutor_client, course_pdf("")).status_code == 422
+    assert upload(tutor_client, course_pdf("Text", password="test")).status_code == 422
+    assert upload(tutor_client, course_pdf("Safe"), filename=".pdf").status_code == 415
+    assert upload(tutor_client, course_pdf("Safe"), filename="../.pdf").status_code == 415
+    monkeypatch.setattr(tutor, "MAX_BYTES", 20)
+    assert upload(tutor_client, b"%PDF-" + b"x" * 20).status_code == 413
+    assert tutor_client.get("/tutor/documents").json() == []
+
+
+def test_upload_retry_after_embedding_failure_is_hard_500(tutor_client, monkeypatch):
+    with monkeypatch.context() as patch:
+        def failed_embedding():
+            raise RuntimeError("Embedding weights unavailable")
+
+        patch.setattr(tutor, "_get_embed_model", failed_embedding)
+        data = course_pdf("Course notes about acceleration.")
+        # Internal embedding/Chroma failures MUST surface as hard HTTP 500
+        assert upload(tutor_client, data).status_code == 500
+    assert tutor_client.get("/tutor/documents").json() == []
+    assert upload(tutor_client, data).status_code == 200
+
+
+def test_tutor_ui_assets_and_closed_loop_elements(tutor_client):
+    html = tutor_client.get("/tutor/").text
+    assert "Study room" in html
+    assert "Model Explainability" in html
+    assert "Drift &amp; Retraining" in html
+    assert tutor_client.get("/tutor/assets/study.css").status_code == 200
+    assert tutor_client.get("/tutor/assets/study.js").status_code == 200
+    assert tutor_client.get("/tutor/assets/../tutor.py").status_code == 404

@@ -171,8 +171,13 @@ def _compute_ks_fallback_report(
 
 
 def _extract_drift_summary(report_dict: dict) -> dict:
-    """Parse drift report dictionary into a compact summary."""
-    summary: dict = {"drift_share": 0.0, "dataset_drifted": False, "feature_drift": {}}
+    """Parse drift report dictionary into a compact summary with per-feature scores."""
+    summary: dict = {
+        "drift_share": 0.0,
+        "dataset_drifted": False,
+        "feature_drift": {},
+        "feature_drift_scores": {},
+    }
     try:
         for metric in report_dict.get("metrics", []):
             result = metric.get("result", {})
@@ -183,6 +188,12 @@ def _extract_drift_summary(report_dict: dict) -> dict:
             for col, col_result in drift_by_col.items():
                 if col in FEATURE_COLS:
                     summary["feature_drift"][col] = bool(col_result.get("drift_detected", False))
+                    raw_score = col_result.get("drift_score")
+                    if raw_score is not None:
+                        try:
+                            summary["feature_drift_scores"][col] = round(float(raw_score), 6)
+                        except (TypeError, ValueError):
+                            pass
     except Exception as exc:
         print(f"[Monitoring] Warning: could not parse drift summary: {exc}")
     return summary
@@ -320,6 +331,25 @@ def compute_drift_report(
     drift_results["html_path"] = html_path
     drift_results["json_path"] = json_path
 
+    feature_details: dict[str, dict] = {}
+    for col in shared_features:
+        ref_s = pd.to_numeric(reference_df[col], errors="coerce").dropna()
+        cur_s = pd.to_numeric(current_df[col], errors="coerce").dropna()
+        r_mean = round(float(ref_s.mean()), 4) if len(ref_s) else 0.0
+        c_mean = round(float(cur_s.mean()), 4) if len(cur_s) else 0.0
+        score = float(drift_results.get("feature_drift_scores", {}).get(col, 0.0))
+        if score == 0.0 and len(ref_s) and len(cur_s):
+            score = round(float(ks_2samp(ref_s.to_numpy(), cur_s.to_numpy()).statistic), 6)
+            drift_results.setdefault("feature_drift_scores", {})[col] = score
+        feature_details[col] = {
+            "drifted": bool(drift_results["feature_drift"].get(col, False)),
+            "drift_score": round(score, 4),
+            "ref_mean": r_mean,
+            "cur_mean": c_mean,
+            "delta": round(c_mean - r_mean, 4),
+        }
+    drift_results["feature_details"] = feature_details
+
     summary_payload = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "tag": tag,
@@ -329,6 +359,8 @@ def compute_drift_report(
         "drifted_features_count": drifted_count,
         "total_features_checked": len(shared_features),
         "feature_drift": drift_results["feature_drift"],
+        "feature_drift_scores": drift_results.get("feature_drift_scores", {}),
+        "feature_details": feature_details,
         "html_path": html_path,
         "json_path": json_path,
         "model_drift": None,
@@ -393,6 +425,31 @@ def compute_classification_report(
         return None
 
 
+def _safe_classification_metrics(
+    y_true: np.ndarray, y_pred: np.ndarray, y_score: np.ndarray
+) -> dict:
+    """Compute classification metrics safely even on small single-class manual windows."""
+    if len(np.unique(y_true)) < 2:
+        acc = float(np.mean(y_true == y_pred)) if len(y_true) else 0.0
+        tp = int(np.sum((y_true == 1) & (y_pred == 1)))
+        fp = int(np.sum((y_true == 0) & (y_pred == 1)))
+        fn = int(np.sum((y_true == 1) & (y_pred == 0)))
+        prec = float(tp / (tp + fp)) if (tp + fp) > 0 else 0.0
+        rec = float(tp / (tp + fn)) if (tp + fn) > 0 else 0.0
+        f1 = float(2 * prec * rec / (prec + rec)) if (prec + rec) > 0 else 0.0
+        return {
+            "accuracy": acc,
+            "precision": prec,
+            "recall": rec,
+            "f1_score": f1,
+            "roc_auc": 0.5,
+            "pr_auc": float(np.mean(y_true)) if len(y_true) else 0.0,
+            "r2_score": 0.0,
+            "mcc": 0.0,
+        }
+    return classification_metrics(y_true, y_pred, y_score)
+
+
 def evaluate_model_drift(
     reference_df: pd.DataFrame,
     current_df: pd.DataFrame,
@@ -422,14 +479,15 @@ def evaluate_model_drift(
     cur_pred = model.predict(X_cur)
     cur_score = positive_scores(model, X_cur)
 
-    ref_metrics = classification_metrics(y_ref, ref_pred, ref_score)
-    cur_metrics = classification_metrics(y_cur, cur_pred, cur_score)
+    ref_metrics = _safe_classification_metrics(y_ref, ref_pred, ref_score)
+    cur_metrics = _safe_classification_metrics(y_cur, cur_pred, cur_score)
 
+    supports_proba = bool(hasattr(model, "predict_proba"))
     ref_risk = model_risk_diagnostics(
-        reference_df, y_ref, ref_pred, ref_score, is_probability=False
+        reference_df, y_ref, ref_pred, ref_score, is_probability=supports_proba
     )
     cur_risk = model_risk_diagnostics(
-        current_df, y_cur, cur_pred, cur_score, is_probability=False
+        current_df, y_cur, cur_pred, cur_score, is_probability=supports_proba
     )
 
     ref_c0_rec = ref_risk["struggling_student_class0"]["recall_specificity"]
@@ -440,7 +498,9 @@ def evaluate_model_drift(
     c0_recall_drop = round(float(ref_c0_rec - cur_c0_rec), 6)
 
     model_drift_detected = bool(
-        f1_drop >= f1_drop_threshold or c0_recall_drop >= f1_drop_threshold
+        f1_drop >= f1_drop_threshold
+        or acc_drop >= f1_drop_threshold
+        or c0_recall_drop >= f1_drop_threshold
     )
 
     ref_with_pred = reference_df.copy()
