@@ -42,3 +42,23 @@ groups:
         annotations:
           summary: "Prediction API is down"
           description: "Prometheus cannot scrape the Student Performance Predictor API."
+
+      # ── Data drift detected ────────────────────────────────────────────────
+      - alert: HighDataDriftDetected
+        expr: data_drift_share >= 0.3
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High feature data drift detected (>= 30%)"
+          description: "Evidently/monitoring detected >= 30% drifted features; trigger retraining."
+
+      # ── Model / concept drift detected ─────────────────────────────────────
+      - alert: ModelPerformanceDegraded
+        expr: model_drift_detected == 1
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Model performance drift detected"
+          description: "Model F1 or struggling-student recall dropped past threshold; retrain required."
