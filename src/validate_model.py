@@ -311,7 +311,7 @@ def validate_baseline_metrics(
             latencies_ms: list[float] = []
             for _ in range(15):
                 t0 = time.perf_counter()
-                probs = model.predict_proba(sample_df.iloc[:1])
+                _ = model.predict_proba(sample_df.iloc[:1])
                 latencies_ms.append((time.perf_counter() - t0) * 1000.0)
 
             median_ms = float(np.median(latencies_ms))

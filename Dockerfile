@@ -50,6 +50,7 @@ RUN python -c "from chromadb.utils.embedding_functions import ONNXMiniLM_L6_V2; 
 # Copy inference service, canonical 11-feature schema, config, offline metrics, and DVC-pulled model
 COPY --chown=mlopsuser:mlops app/                          ./app/
 COPY --chown=mlopsuser:mlops src/                          ./src/
+COPY --chown=mlopsuser:mlops sql/                          ./sql/
 COPY --chown=mlopsuser:mlops models/                       ./models/
 COPY --chown=mlopsuser:mlops params.yaml                   ./params.yaml
 COPY --chown=mlopsuser:mlops reports/baseline_metrics.json ./reports/baseline_metrics.json

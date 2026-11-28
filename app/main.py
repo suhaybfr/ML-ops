@@ -26,18 +26,29 @@ if str(REPO_ROOT) not in sys.path:
 import joblib  # noqa: E402
 import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
-from fastapi import FastAPI, HTTPException  # noqa: E402
+from fastapi import Depends, FastAPI, HTTPException  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from fastapi.responses import JSONResponse, PlainTextResponse  # noqa: E402
 from pydantic import BaseModel, ConfigDict, Field  # noqa: E402
+from sklearn.metrics import f1_score  # noqa: E402
 from sklearn.pipeline import Pipeline  # noqa: E402
 
+from src.alerts import get_alert_webhook_url, send_alert_webhook  # noqa: E402
+from src.artifact_store import ModelArtifactStore, is_azure_blob_configured  # noqa: E402
+from src.assessment import (  # noqa: E402
+    build_socratic_intervention_prompt,
+    compute_11_engineered_features,
+    ensure_assessment_items_seeded,
+    get_hint_for_item,
+    sanitize_item_for_student,
+)
 from src.features import ENGINEERED_FEATURES, TARGET_COL  # noqa: E402
+from src.security import get_configured_admin_key, require_admin_api_key  # noqa: E402
+from src.storage import get_storage, is_postgres_configured  # noqa: E402
 from src.telemetry import (  # noqa: E402
     FEATURE_DESCRIPTIONS,
     append_interactions,
     generate_simulated_batch,
-    get_live_buffer_path,
     get_live_buffer_stats,
     load_live_interactions,
     reset_live_telemetry,
@@ -285,6 +296,38 @@ if _PROMETHEUS_AVAILABLE:
         "F1 score of the most recent retrained candidate model",
     )
 
+    # Milestone 3: Shadow Challenger live comparison metrics
+    SHADOW_MODEL_ACTIVE = _get_or_create_metric(
+        Gauge,
+        "shadow_model_active",
+        "1 if a Shadow Challenger model is currently scoring live traffic, 0 otherwise",
+    )
+    SHADOW_PREDICTIONS_TOTAL = _get_or_create_metric(
+        Counter,
+        "shadow_predictions_total",
+        "Total live predictions scored in shadow by the challenger model",
+    )
+    SHADOW_DISAGREEMENTS_TOTAL = _get_or_create_metric(
+        Counter,
+        "shadow_disagreements_total",
+        "Total live predictions where Shadow Challenger disagreed with Champion",
+    )
+    SHADOW_DISAGREEMENT_RATE = _get_or_create_metric(
+        Gauge,
+        "shadow_disagreement_rate",
+        "Fraction of live predictions where Shadow Challenger disagreed with Champion",
+    )
+    CHALLENGER_LIVE_F1 = _get_or_create_metric(
+        Gauge,
+        "challenger_live_f1",
+        "Observed live F1 score of the Shadow Challenger on labeled traffic",
+    )
+    CHAMPION_LIVE_F1 = _get_or_create_metric(
+        Gauge,
+        "champion_live_f1",
+        "Observed live F1 score of the active Champion on the same labeled traffic",
+    )
+
     # Ensure tutor metrics exist in REGISTRY even when ENABLE_TUTOR=0 so alerts stay clean
     TUTOR_REQUESTS_METRIC = _get_or_create_metric(
         Counter,
@@ -314,6 +357,23 @@ if _PROMETHEUS_AVAILABLE:
         "tutor_indexed_chunks_total",
         "Total indexed text chunks across curriculum and uploaded PDFs",
     )
+    TUTOR_TOKENS_METRIC = _get_or_create_metric(
+        Counter,
+        "tutor_tokens_total",
+        "Total Gemini tokens consumed by /tutor/ask by token type",
+        ["token_type"],
+    )
+    TUTOR_RETRIEVAL_TOP_SIM_METRIC = _get_or_create_metric(
+        Histogram,
+        "tutor_retrieval_top_similarity",
+        "Top retrieval cosine similarity score on /tutor/ask",
+        buckets=[0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0],
+    )
+    TUTOR_CHUNKS_FILTERED_METRIC = _get_or_create_metric(
+        Counter,
+        "tutor_chunks_filtered_total",
+        "Total retrieved chunks dropped below TUTOR_MIN_SIMILARITY relevance floor",
+    )
 
     # Initialize default label series to 0 so PromQL rules never evaluate to empty
     PREDICTION_COUNTER.labels(endpoint="/predict", result="0")
@@ -329,6 +389,8 @@ if _PROMETHEUS_AVAILABLE:
     TUTOR_REQUESTS_METRIC.labels(status="success", source_type="curriculum")
     TUTOR_REQUESTS_METRIC.labels(status="error", source_type="curriculum")
     TUTOR_ERRORS_METRIC.labels(error_type="llm_error")
+    for _tok in ("prompt", "completion", "total"):
+        TUTOR_TOKENS_METRIC.labels(token_type=_tok)
     for _feat in ENGINEERED_FEATURES:
         FEATURE_DRIFT_DETECTED.labels(feature=_feat).set(0)
         FEATURE_DRIFT_SCORE.labels(feature=_feat).set(0.0)
@@ -365,6 +427,23 @@ _active_info_labels: Optional[tuple[str, str, str]] = None
 _scored_total_count = 0
 _scored_intervention_count = 0
 _offline_gate_cache: Optional[dict[str, Any]] = None
+_metrics_sync_lock = threading.Lock()
+_last_metrics_sync_ts: float = 0.0
+_METRICS_SYNC_TTL_SECONDS: float = 15.0
+
+# Milestone 3: Shadow Challenger runtime state
+_shadow_lock = threading.RLock()
+_shadow_model: Any = None
+_shadow_version: Optional[str] = None
+_shadow_path: Optional[str] = None
+_shadow_artifact_uri: Optional[str] = None
+_shadow_loaded_at: Optional[str] = None
+_shadow_total: int = 0
+_shadow_disagreements: int = 0
+_shadow_recent_preds: dict[str, tuple[int, int]] = {}
+_shadow_eval_y_true: list[int] = []
+_shadow_eval_champ: list[int] = []
+_shadow_eval_chall: list[int] = []
 
 
 def _infer_version_label(model_path: str, model_obj: Any, registry_uri: str = "") -> str:
@@ -586,6 +665,28 @@ def _read_json_if_exists(path: Path) -> Optional[dict[str, Any]]:
         return None
 
 
+def _get_latest_drift_summary(drift_dir: Path) -> dict[str, Any]:
+    if is_postgres_configured():
+        try:
+            stored = get_storage().get_latest_drift_snapshot()
+            if stored:
+                return stored
+        except Exception:
+            pass
+    return _read_json_if_exists(drift_dir / "latest_drift_summary.json") or {}
+
+
+def _get_latest_retrain_status(drift_dir: Path) -> dict[str, Any]:
+    if is_postgres_configured():
+        try:
+            stored = get_storage().get_latest_retrain_run()
+            if stored:
+                return stored
+        except Exception:
+            pass
+    return _read_json_if_exists(drift_dir / "latest_status.json") or {}
+
+
 def _sync_offline_champion_metrics() -> None:
     global _offline_gate_cache
     if not _PROMETHEUS_AVAILABLE:
@@ -630,62 +731,82 @@ def _sync_offline_champion_metrics() -> None:
     QUALITY_GATE_CHECKS_PASSED.set(int(_offline_gate_cache.get("passed_checks", 0)))
 
 
-def _sync_drift_and_retrain_metrics() -> None:
+def _sync_drift_and_retrain_metrics(force: bool = True) -> None:
+    global _last_metrics_sync_ts
     if not _PROMETHEUS_AVAILABLE:
         return
 
-    drift_dir = Path(os.environ.get("DRIFT_REPORTS_DIR", str(DRIFT_REPORTS_DIR)))
-    drift_summary = _read_json_if_exists(drift_dir / "latest_drift_summary.json") or {}
-    retrain_status = _read_json_if_exists(drift_dir / "latest_status.json") or {}
+    now = time.monotonic()
+    # When backed by remote Postgres, avoid hammering DB on every 5s Prometheus scrape
+    if (
+        not force
+        and is_postgres_configured()
+        and _last_metrics_sync_ts > 0.0
+        and (now - _last_metrics_sync_ts) < _METRICS_SYNC_TTL_SECONDS
+    ):
+        return
 
-    DATA_DRIFT_SHARE.set(float(drift_summary.get("drift_share", 0.0)))
-    DATASET_DRIFTED.set(1 if drift_summary.get("dataset_drifted") else 0)
-    DRIFTED_FEATURES_COUNT.set(int(drift_summary.get("drifted_features_count", 0)))
+    if not _metrics_sync_lock.acquire(blocking=force):
+        return
+    try:
+        drift_dir = Path(os.environ.get("DRIFT_REPORTS_DIR", str(DRIFT_REPORTS_DIR)))
+        drift_summary = _get_latest_drift_summary(drift_dir)
+        retrain_status = _get_latest_retrain_status(drift_dir)
 
-    feat_flags = drift_summary.get("feature_drift", {}) or {}
-    feat_scores = drift_summary.get("feature_drift_scores", {}) or {}
-    for feat in ENGINEERED_FEATURES:
-        drifted_flag = 1 if feat_flags.get(feat) else 0
-        FEATURE_DRIFT_DETECTED.labels(feature=feat).set(drifted_flag)
-        score = feat_scores.get(feat)
-        if score is not None:
-            FEATURE_DRIFT_SCORE.labels(feature=feat).set(float(score))
-        else:
-            FEATURE_DRIFT_SCORE.labels(feature=feat).set(float(drifted_flag))
+        DATA_DRIFT_SHARE.set(float(drift_summary.get("drift_share", 0.0)))
+        DATASET_DRIFTED.set(1 if drift_summary.get("dataset_drifted") else 0)
+        DRIFTED_FEATURES_COUNT.set(int(drift_summary.get("drifted_features_count", 0)))
 
-    md = drift_summary.get("model_drift") or {}
-    MODEL_DRIFT_DETECTED.set(1 if md.get("model_drift_detected") else 0)
-    MODEL_DRIFT_F1_DROP.set(float(md.get("f1_drop", 0.0)))
-    cur_f1 = (md.get("current_metrics") or {}).get("f1_score", 0.0)
-    MODEL_DRIFT_CURRENT_F1.set(float(cur_f1))
-    MODEL_DRIFT_CLASS0_RECALL_DROP.set(float(md.get("class0_recall_drop", 0.0)))
+        feat_flags = drift_summary.get("feature_drift", {}) or {}
+        feat_scores = drift_summary.get("feature_drift_scores", {}) or {}
+        for feat in ENGINEERED_FEATURES:
+            drifted_flag = 1 if feat_flags.get(feat) else 0
+            FEATURE_DRIFT_DETECTED.labels(feature=feat).set(drifted_flag)
+            score = feat_scores.get(feat)
+            if score is not None:
+                FEATURE_DRIFT_SCORE.labels(feature=feat).set(float(score))
+            else:
+                FEATURE_DRIFT_SCORE.labels(feature=feat).set(float(drifted_flag))
 
-    # Retrain state (with clean defaults before any retrain has run)
-    RETRAIN_RUNS_GAUGE.set(int(retrain_status.get("retrain_runs_total", 0)))
-    RETRAIN_PROMOTIONS_GAUGE.set(int(retrain_status.get("retrain_promotions_total", 0)))
-    RETRAIN_LAST_CANDIDATE_F1.set(float(retrain_status.get("candidate_f1", 0.0)))
+        md = drift_summary.get("model_drift") or {}
+        MODEL_DRIFT_DETECTED.set(1 if md.get("model_drift_detected") else 0)
+        MODEL_DRIFT_F1_DROP.set(float(md.get("f1_drop", 0.0)))
+        cur_f1 = (md.get("current_metrics") or {}).get("f1_score", 0.0)
+        MODEL_DRIFT_CURRENT_F1.set(float(cur_f1))
+        MODEL_DRIFT_CLASS0_RECALL_DROP.set(float(md.get("class0_recall_drop", 0.0)))
 
-    cur_status = str(retrain_status.get("status", "idle"))
-    for st in _RETRAIN_STATUSES:
-        RETRAIN_LAST_STATUS.labels(status=st).set(1 if st == cur_status else 0)
+        # Retrain state (with clean defaults before any retrain has run)
+        RETRAIN_RUNS_GAUGE.set(int(retrain_status.get("retrain_runs_total", 0)))
+        RETRAIN_PROMOTIONS_GAUGE.set(int(retrain_status.get("retrain_promotions_total", 0)))
+        RETRAIN_LAST_CANDIDATE_F1.set(float(retrain_status.get("candidate_f1", 0.0)))
 
-    if "quality_gate_passed" in retrain_status and retrain_status.get("retrained"):
-        QUALITY_GATE_PASSED.set(1 if retrain_status.get("quality_gate_passed") else 0)
-        if retrain_status.get("quality_gate_total_checks"):
-            QUALITY_GATE_CHECKS_TOTAL.set(int(retrain_status["quality_gate_total_checks"]))
-            QUALITY_GATE_CHECKS_PASSED.set(int(retrain_status.get("quality_gate_passed_checks", 0)))
+        cur_status = str(retrain_status.get("status", "idle"))
+        for st in _RETRAIN_STATUSES:
+            RETRAIN_LAST_STATUS.labels(status=st).set(1 if st == cur_status else 0)
 
-    # Live buffer stats
-    buf_stats = get_live_buffer_stats()
-    LIVE_INTERACTIONS_GAUGE.set(buf_stats["total_rows"])
-    LIVE_LABELED_GAUGE.set(buf_stats["labeled_rows"])
+        if "quality_gate_passed" in retrain_status and retrain_status.get("retrained"):
+            QUALITY_GATE_PASSED.set(1 if retrain_status.get("quality_gate_passed") else 0)
+            if retrain_status.get("quality_gate_total_checks"):
+                QUALITY_GATE_CHECKS_TOTAL.set(int(retrain_status["quality_gate_total_checks"]))
+                QUALITY_GATE_CHECKS_PASSED.set(
+                    int(retrain_status.get("quality_gate_passed_checks", 0))
+                )
 
-    # Downstream tutor gauges (if tutor is mounted)
-    if _tutor_mod is not None and hasattr(_tutor_mod, "refresh_tutor_metrics"):
-        try:
-            _tutor_mod.refresh_tutor_metrics()
-        except Exception:
-            pass
+        # Live buffer stats
+        buf_stats = get_live_buffer_stats()
+        LIVE_INTERACTIONS_GAUGE.set(buf_stats["total_rows"])
+        LIVE_LABELED_GAUGE.set(buf_stats["labeled_rows"])
+
+        # Downstream tutor gauges (if tutor is mounted)
+        if _tutor_mod is not None and hasattr(_tutor_mod, "refresh_tutor_metrics"):
+            try:
+                _tutor_mod.refresh_tutor_metrics()
+            except Exception:
+                pass
+
+        _last_metrics_sync_ts = time.monotonic()
+    finally:
+        _metrics_sync_lock.release()
 
 
 # Attempt non-fatal warm load at startup
@@ -859,6 +980,47 @@ class RetrainTriggerRequest(BaseModel):
     from_live: bool = True
     hot_reload: bool = True
     drift_threshold: float = Field(default=0.3, ge=0.0, le=1.0)
+    async_mode: bool = False
+    deploy_as_shadow: bool = False
+
+
+class ShadowDeployRequest(BaseModel):
+    model_path: Optional[str] = None
+    artifact_uri: Optional[str] = None
+    version_label: Optional[str] = None
+
+
+class StudentOutcomeRequest(BaseModel):
+    skill_name: str = Field(default="Digital Literacy", min_length=1, max_length=120)
+    correct: int = Field(..., ge=0, le=1)
+    display_name: Optional[str] = Field(default=None, max_length=120)
+
+
+class AssessmentStartRequest(BaseModel):
+    student_id: str = Field(default="student_demo", min_length=1, max_length=120)
+    item_id: Optional[str] = Field(default=None, max_length=120)
+    skill_name: Optional[str] = Field(default=None, max_length=120)
+
+
+class AssessmentHintRequest(BaseModel):
+    item_id: str = Field(..., min_length=1, max_length=120)
+    hint_index: int = Field(..., ge=0, le=20)
+    attempt_session_id: Optional[str] = Field(default=None, max_length=120)
+
+
+class AssessmentSubmitRequest(BaseModel):
+    student_id: str = Field(default="student_demo", min_length=1, max_length=120)
+    item_id: str = Field(..., min_length=1, max_length=120)
+    selected_answer: str = Field(..., min_length=1, max_length=1000)
+    attempt_session_id: Optional[str] = Field(default=None, max_length=120)
+    attempt_count: Optional[int] = Field(default=None, ge=1, le=50)
+    hints_used: Optional[int] = Field(default=None, ge=0, le=50)
+    bottom_hint_used: Optional[bool] = None
+    ms_first_response: Optional[float] = Field(default=None, ge=0.0, le=3_600_000.0)
+
+
+_assessment_sessions_lock = threading.Lock()
+_assessment_sessions: dict[str, dict[str, Any]] = {}
 
 
 # ---------------------------------------------------------------------------
@@ -958,6 +1120,219 @@ def _log_predictions_nonfatal(
 
 
 # ---------------------------------------------------------------------------
+# Milestone 3: Shadow Challenger scoring & Blue-Green promotion helpers
+# ---------------------------------------------------------------------------
+
+
+def _update_shadow_gauges_locked() -> None:
+    if not _PROMETHEUS_AVAILABLE:
+        return
+    SHADOW_MODEL_ACTIVE.set(1 if _shadow_model is not None else 0)
+    rate = (_shadow_disagreements / _shadow_total) if _shadow_total > 0 else 0.0
+    SHADOW_DISAGREEMENT_RATE.set(round(rate, 6))
+    if len(_shadow_eval_y_true) >= 1:
+        chall_f1 = float(f1_score(_shadow_eval_y_true, _shadow_eval_chall, zero_division=0))
+        champ_f1 = float(f1_score(_shadow_eval_y_true, _shadow_eval_champ, zero_division=0))
+        CHALLENGER_LIVE_F1.set(round(chall_f1, 6))
+        CHAMPION_LIVE_F1.set(round(champ_f1, 6))
+    else:
+        CHALLENGER_LIVE_F1.set(0.0)
+        CHAMPION_LIVE_F1.set(0.0)
+
+
+def deploy_shadow_model(
+    model_path: Optional[str] = None,
+    artifact_uri: Optional[str] = None,
+    version_label: Optional[str] = None,
+) -> dict[str, Any]:
+    """Load a candidate into Shadow Challenger Mode without affecting 100% Champion traffic."""
+    global _shadow_model, _shadow_version, _shadow_path, _shadow_artifact_uri
+    global _shadow_loaded_at, _shadow_total, _shadow_disagreements
+    global _shadow_recent_preds, _shadow_eval_y_true, _shadow_eval_champ, _shadow_eval_chall
+
+    resolved_path: Optional[Path] = None
+    if model_path and model_path.strip():
+        candidate = Path(model_path.strip())
+        candidate = (
+            candidate.resolve() if candidate.is_absolute() else (REPO_ROOT / candidate).resolve()
+        )
+        if not candidate.is_relative_to(REPO_ROOT.resolve()) or candidate.suffix.lower() != ".pkl":
+            raise HTTPException(
+                status_code=400,
+                detail="model_path must reference a .pkl file inside the project repository.",
+            )
+        if not candidate.exists():
+            raise HTTPException(status_code=404, detail=f"Shadow model not found: {candidate}")
+        resolved_path = candidate
+    elif artifact_uri and artifact_uri.strip():
+        dest = REPO_ROOT / "models" / "challenger_model.pkl"
+        try:
+            resolved_path = ModelArtifactStore().download_model(artifact_uri.strip(), dest)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Failed to download shadow artifact '{artifact_uri}': {exc}",
+            ) from exc
+    else:
+        default_chall = REPO_ROOT / "models" / "challenger_model.pkl"
+        if not default_chall.exists():
+            raise HTTPException(
+                status_code=404,
+                detail="No challenger model found at models/challenger_model.pkl.",
+            )
+        resolved_path = default_chall
+
+    try:
+        loaded = joblib.load(resolved_path)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500, detail=f"Failed to load shadow model: {type(exc).__name__}: {exc}"
+        ) from exc
+
+    ver = version_label or _infer_version_label(str(resolved_path), loaded)
+    now_iso = datetime.now(timezone.utc).isoformat()
+    with _shadow_lock:
+        _shadow_model = loaded
+        _shadow_version = ver
+        _shadow_path = str(resolved_path)
+        _shadow_artifact_uri = artifact_uri
+        _shadow_loaded_at = now_iso
+        _shadow_total = 0
+        _shadow_disagreements = 0
+        _shadow_recent_preds = {}
+        _shadow_eval_y_true = []
+        _shadow_eval_champ = []
+        _shadow_eval_chall = []
+        _update_shadow_gauges_locked()
+
+    return get_shadow_status()
+
+
+def clear_shadow_model() -> dict[str, Any]:
+    """Disable Shadow Challenger Mode and reset shadow comparison metrics."""
+    global _shadow_model, _shadow_version, _shadow_path, _shadow_artifact_uri
+    global _shadow_loaded_at, _shadow_total, _shadow_disagreements
+    global _shadow_recent_preds, _shadow_eval_y_true, _shadow_eval_champ, _shadow_eval_chall
+    with _shadow_lock:
+        _shadow_model = None
+        _shadow_version = None
+        _shadow_path = None
+        _shadow_artifact_uri = None
+        _shadow_loaded_at = None
+        _shadow_total = 0
+        _shadow_disagreements = 0
+        _shadow_recent_preds = {}
+        _shadow_eval_y_true = []
+        _shadow_eval_champ = []
+        _shadow_eval_chall = []
+        _update_shadow_gauges_locked()
+    return get_shadow_status()
+
+
+def get_shadow_status() -> dict[str, Any]:
+    """Return live Shadow Challenger vs Champion comparison metrics."""
+    with _shadow_lock:
+        active = _shadow_model is not None
+        rate = (_shadow_disagreements / _shadow_total) if _shadow_total > 0 else 0.0
+        n_labeled = len(_shadow_eval_y_true)
+        chall_f1 = (
+            float(f1_score(_shadow_eval_y_true, _shadow_eval_chall, zero_division=0))
+            if n_labeled >= 1
+            else 0.0
+        )
+        champ_f1 = (
+            float(f1_score(_shadow_eval_y_true, _shadow_eval_champ, zero_division=0))
+            if n_labeled >= 1
+            else 0.0
+        )
+        ready = bool(active and n_labeled >= 5 and chall_f1 >= (champ_f1 - 0.02))
+        return {
+            "active": active,
+            "champion_version": _model_version,
+            "challenger_version": _shadow_version,
+            "challenger_path": _shadow_path,
+            "artifact_uri": _shadow_artifact_uri,
+            "loaded_at": _shadow_loaded_at,
+            "predictions_scored": _shadow_total,
+            "disagreements": _shadow_disagreements,
+            "shadow_disagreement_rate": round(rate, 4),
+            "labeled_samples": n_labeled,
+            "challenger_live_f1": round(chall_f1, 4),
+            "champion_live_f1": round(champ_f1, 4),
+            "ready_to_promote": ready,
+        }
+
+
+def _score_shadow_nonfatal(
+    df: pd.DataFrame,
+    champ_preds: list[int],
+    interaction_ids: Optional[list[Optional[str]]] = None,
+    correct_values: Optional[list[Optional[int]]] = None,
+) -> None:
+    """Score live requests in shadow without blocking or failing Champion traffic."""
+    global _shadow_total, _shadow_disagreements
+    with _shadow_lock:
+        shadow = _shadow_model
+    if shadow is None:
+        return
+    try:
+        chall_preds, _ = _predict_with_probabilities(shadow, df)
+        with _shadow_lock:
+            if _shadow_model is None:
+                return
+            disagreements = 0
+            for idx, (cp, sp) in enumerate(zip(champ_preds, chall_preds)):
+                if int(cp) != int(sp):
+                    disagreements += 1
+                iid = (
+                    interaction_ids[idx]
+                    if interaction_ids and idx < len(interaction_ids)
+                    else None
+                )
+                if iid:
+                    if len(_shadow_recent_preds) >= 5000:
+                        _shadow_recent_preds.pop(next(iter(_shadow_recent_preds)))
+                    _shadow_recent_preds[iid] = (int(cp), int(sp))
+                corr = (
+                    correct_values[idx]
+                    if correct_values and idx < len(correct_values)
+                    else None
+                )
+                if corr in (0, 1):
+                    _shadow_eval_y_true.append(int(corr))
+                    _shadow_eval_champ.append(int(cp))
+                    _shadow_eval_chall.append(int(sp))
+                    if len(_shadow_eval_y_true) > 5000:
+                        del _shadow_eval_y_true[:1000]
+                        del _shadow_eval_champ[:1000]
+                        del _shadow_eval_chall[:1000]
+            _shadow_total += len(chall_preds)
+            _shadow_disagreements += disagreements
+            if _PROMETHEUS_AVAILABLE:
+                SHADOW_PREDICTIONS_TOTAL.inc(len(chall_preds))
+                if disagreements:
+                    SHADOW_DISAGREEMENTS_TOTAL.inc(disagreements)
+            _update_shadow_gauges_locked()
+    except Exception:
+        pass
+
+
+def _record_shadow_label_nonfatal(interaction_id: str, correct: int) -> None:
+    """Attach delayed ground-truth feedback to a prior shadow prediction for live F1."""
+    if not interaction_id:
+        return
+    with _shadow_lock:
+        pair = _shadow_recent_preds.pop(interaction_id, None)
+        if pair is None or _shadow_model is None:
+            return
+        cp, sp = pair
+        _shadow_eval_y_true.append(int(correct))
+        _shadow_eval_champ.append(cp)
+        _shadow_eval_chall.append(sp)
+        _update_shadow_gauges_locked()
+
+
+# ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
 
@@ -978,6 +1353,12 @@ def root():
         "telemetry_simulate": "POST /telemetry/simulate",
         "telemetry_reset": "POST /telemetry/reset",
         "telemetry_summary": "GET /telemetry/summary",
+        "student_features": "GET /features/student/{student_id}",
+        "student_outcome": "POST /features/student/{student_id}/outcome",
+        "assessment_items": "GET /assessment/items",
+        "assessment_start": "POST /assessment/start",
+        "assessment_hint": "POST /assessment/hint",
+        "assessment_submit": "POST /assessment/submit",
         "metrics": "GET /metrics",
         "docs": "GET /docs",
     }
@@ -1003,6 +1384,7 @@ def health():
     except RuntimeError:
         model_ready = False
 
+    pg_active = is_postgres_configured()
     return JSONResponse(
         status_code=200,
         content={
@@ -1011,6 +1393,12 @@ def health():
             "model_path": MODEL_PATH,
             "model_source": _model_source,
             "model_version": _model_version,
+            "storage_backend": "postgres" if pg_active else "local",
+            "vector_backend": "pgvector" if pg_active else "chroma",
+            "artifact_backend": "azure_blob" if is_azure_blob_configured() else "local",
+            "admin_auth_enabled": bool(get_configured_admin_key()),
+            "alerts_configured": bool(get_alert_webhook_url()),
+            "shadow_active": _shadow_model is not None,
             "uptime_seconds": (
                 round(time.time() - _model_load_time, 1) if _model_load_time else None
             ),
@@ -1018,13 +1406,18 @@ def health():
     )
 
 
-@app.get("/metrics", tags=["Monitoring"], response_class=PlainTextResponse)
+@app.get(
+    "/metrics",
+    tags=["Monitoring"],
+    response_class=PlainTextResponse,
+    dependencies=[Depends(require_admin_api_key)],
+)
 def metrics():
     """Full-pipeline Prometheus exposition endpoint."""
     if not _PROMETHEUS_AVAILABLE:
         return PlainTextResponse("# prometheus_client not installed\n", media_type="text/plain")
     _sync_offline_champion_metrics()
-    _sync_drift_and_retrain_metrics()
+    _sync_drift_and_retrain_metrics(force=False)
     return PlainTextResponse(
         generate_latest(REGISTRY).decode("utf-8"),
         media_type=CONTENT_TYPE_LATEST,
@@ -1083,7 +1476,7 @@ def model_info():
     }
 
 
-@app.post("/model/reload", tags=["Model"])
+@app.post("/model/reload", tags=["Model"], dependencies=[Depends(require_admin_api_key)])
 def reload_model(body: Optional[ModelReloadRequest] = None):
     """Zero-downtime model reload / promotion swap without container restart."""
     req = body or ModelReloadRequest()
@@ -1094,27 +1487,133 @@ def reload_model(body: Optional[ModelReloadRequest] = None):
     )
 
 
-@app.post("/model/retrain", tags=["Model"])
+@app.post("/model/retrain", tags=["Model"], dependencies=[Depends(require_admin_api_key)])
 def trigger_retrain(body: Optional[RetrainTriggerRequest] = None):
-    """Run drift-gated retraining from live telemetry and optionally hot-reload the model."""
-    from src.retrain import retrain_cycle
+    """Run drift-gated retraining (sync or out-of-band async) with optional Shadow deploy."""
+    from src.worker_retrain import execute_retrain_job, submit_async_retrain_job
 
     req = body or RetrainTriggerRequest()
     drift_dir = Path(os.environ.get("DRIFT_REPORTS_DIR", str(DRIFT_REPORTS_DIR)))
-    result = retrain_cycle(
-        from_live=req.from_live,
-        force=req.force,
-        drift_threshold=req.drift_threshold,
-        output_dir=drift_dir,
-        status_path=drift_dir / "latest_status.json",
+
+    def _on_shadow(path: str, version: str, uri: Optional[str]) -> dict[str, Any]:
+        return deploy_shadow_model(model_path=path, artifact_uri=uri, version_label=version)
+
+    def _on_reload(path: str, version: str) -> dict[str, Any]:
+        return reload_active_model(model_path=path, version_label=version)
+
+    job_kwargs = {
+        "from_live": req.from_live,
+        "force": req.force,
+        "drift_threshold": req.drift_threshold,
+        "deploy_as_shadow": req.deploy_as_shadow,
+        "hot_reload": req.hot_reload,
+        "output_dir": drift_dir,
+        "on_shadow_ready": _on_shadow,
+        "on_hot_reload": _on_reload,
+        "on_complete": _sync_drift_and_retrain_metrics,
+    }
+    if req.async_mode:
+        return submit_async_retrain_job(**job_kwargs)
+    return execute_retrain_job(**job_kwargs)
+
+
+@app.get(
+    "/model/retrain/jobs",
+    tags=["Model"],
+    dependencies=[Depends(require_admin_api_key)],
+)
+def get_retrain_jobs():
+    """List background async retraining jobs."""
+    from src.worker_retrain import list_retrain_jobs
+
+    return {"jobs": list_retrain_jobs()}
+
+
+@app.get(
+    "/model/retrain/jobs/{job_id}",
+    tags=["Model"],
+    dependencies=[Depends(require_admin_api_key)],
+)
+def get_retrain_job_status(job_id: str):
+    """Fetch status and result for a specific async retraining job."""
+    from src.worker_retrain import get_retrain_job
+
+    job = get_retrain_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"Retrain job '{job_id}' not found.")
+    return job
+
+
+@app.get("/model/shadow/status", tags=["Model"])
+def shadow_status():
+    """Inspect active Shadow Challenger vs Champion disagreement rate and live F1."""
+    return get_shadow_status()
+
+
+@app.post("/model/shadow/deploy", tags=["Model"], dependencies=[Depends(require_admin_api_key)])
+def shadow_deploy(body: Optional[ShadowDeployRequest] = None):
+    """Deploy a candidate model in Shadow Challenger Mode (0% user-facing traffic)."""
+    req = body or ShadowDeployRequest()
+    return deploy_shadow_model(
+        model_path=req.model_path,
+        artifact_uri=req.artifact_uri,
+        version_label=req.version_label,
     )
-    if req.hot_reload and result.get("promoted") and result.get("active_artifact_path"):
-        result["reload_result"] = reload_active_model(
-            model_path=result["active_artifact_path"],
-            version_label=result.get("active_model_version"),
-        )
-    _sync_drift_and_retrain_metrics()
-    return result
+
+
+@app.post("/model/shadow/promote", tags=["Model"], dependencies=[Depends(require_admin_api_key)])
+def shadow_promote():
+    """Blue-Green promote the active Shadow Challenger to 100% Champion traffic."""
+    import shutil
+
+    with _shadow_lock:
+        if _shadow_model is None or not _shadow_path:
+            raise HTTPException(status_code=400, detail="No Shadow Challenger is currently active.")
+        src = Path(_shadow_path)
+        ver = _shadow_version or "random_forest_retrained_shadow"
+        snapshot = get_shadow_status()
+
+    dest = REPO_ROOT / "models" / "retrained_champion.pkl"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if src.resolve() != dest.resolve():
+        shutil.copy2(src, dest)
+    reload_res = reload_active_model(model_path=str(dest), version_label=ver)
+
+    # Keep MLflow Model Registry @champion alias synced with Blue-Green promotion
+    mlflow_promotion: Optional[dict[str, Any]] = None
+    try:
+        import re
+
+        m = re.search(r"_v(\d+)$", ver)
+        if m:
+            from mlflow.tracking import MlflowClient
+            from src.register_model import CHAMPION_ALIAS, REGISTRY_MODEL_NAME
+            from src.utils import setup_mlflow
+
+            setup_mlflow(allow_local_fallback=True)
+            client = MlflowClient()
+            client.set_registered_model_alias(REGISTRY_MODEL_NAME, CHAMPION_ALIAS, m.group(1))
+            mlflow_promotion = {
+                "model_name": REGISTRY_MODEL_NAME,
+                "alias": CHAMPION_ALIAS,
+                "version": m.group(1),
+            }
+    except Exception as exc:
+        mlflow_promotion = {"skipped": str(exc)}
+
+    clear_shadow_model()
+    return {
+        "status": "promoted_from_shadow",
+        "shadow_snapshot": snapshot,
+        "reload_result": reload_res,
+        "mlflow_promotion": mlflow_promotion,
+    }
+
+
+@app.post("/model/shadow/clear", tags=["Model"], dependencies=[Depends(require_admin_api_key)])
+def shadow_clear():
+    """Disable Shadow Challenger Mode without altering the active Champion."""
+    return clear_shadow_model()
 
 
 def _compute_local_xai(model: Any, features: StudentFeatures) -> dict[str, Any]:
@@ -1245,6 +1744,7 @@ def predict(features: StudentFeatures):
     response = _format_prediction_response(preds[0], probs[0])
 
     _record_live_scoring_metrics(preds, probs)
+    _score_shadow_nonfatal(df, preds)
     _log_predictions_nonfatal([features], [response], source="api_predict")
 
     if _PROMETHEUS_AVAILABLE:
@@ -1273,6 +1773,7 @@ def predict_explain(features: StudentFeatures, log_interaction: bool = True):
 
     interaction_id = uuid.uuid4().hex[:12]
     _record_live_scoring_metrics(preds, probs)
+    _score_shadow_nonfatal(df, preds, interaction_ids=[interaction_id])
     if log_interaction:
         _log_predictions_nonfatal(
             [features], [response], source="tutor_xai", session_id=interaction_id
@@ -1317,6 +1818,7 @@ def predict_batch(request: BatchPredictionRequest):
     results = [_format_prediction_response(p, pr) for p, pr in zip(preds, probs)]
 
     _record_live_scoring_metrics(preds, probs)
+    _score_shadow_nonfatal(df, preds)
     _log_predictions_nonfatal(request.instances, results, source="api_batch")
 
     if _PROMETHEUS_AVAILABLE:
@@ -1356,6 +1858,7 @@ def log_telemetry_feedback(body: TelemetryFeedbackRequest):
             correct=body.correct,
             fallback_record=fallback,
         )
+        _record_shadow_label_nonfatal(body.session_id, body.correct)
         if not updated_in_place:
             _record_live_scoring_metrics(preds, probs)
     else:
@@ -1370,7 +1873,7 @@ def log_telemetry_feedback(body: TelemetryFeedbackRequest):
         )
 
     drift_dir = Path(os.environ.get("DRIFT_REPORTS_DIR", str(DRIFT_REPORTS_DIR)))
-    retrain_doc = _read_json_if_exists(drift_dir / "latest_status.json") or {}
+    retrain_doc = _get_latest_retrain_status(drift_dir)
     watermark = int(retrain_doc.get("watermark_rows", 0))
     stats = get_live_buffer_stats(watermark_rows=watermark)
     _sync_drift_and_retrain_metrics()
@@ -1402,15 +1905,11 @@ def check_window_drift():
     from src.monitoring import run_full_monitoring
 
     drift_dir = Path(os.environ.get("DRIFT_REPORTS_DIR", str(DRIFT_REPORTS_DIR)))
-    retrain_doc = _read_json_if_exists(drift_dir / "latest_status.json") or {}
+    retrain_doc = _get_latest_retrain_status(drift_dir)
     watermark = int(retrain_doc.get("watermark_rows", 0))
 
-    win_all = load_live_interactions(
-        buffer_path=get_live_buffer_path(), labeled_only=False, since_row=watermark
-    )
-    win_labeled = load_live_interactions(
-        buffer_path=get_live_buffer_path(), labeled_only=True, since_row=watermark
-    )
+    win_all = load_live_interactions(labeled_only=False, since_row=watermark)
+    win_labeled = load_live_interactions(labeled_only=True, since_row=watermark)
     if len(win_all) < 5:
         raise HTTPException(
             status_code=400,
@@ -1445,44 +1944,123 @@ def check_window_drift():
     }
 
 
+@app.post("/alerts/test", tags=["Monitoring"], dependencies=[Depends(require_admin_api_key)])
+def test_alert_webhook():
+    """Send a test notification to the configured Discord / webhook alert channel."""
+    return send_alert_webhook(
+        title="Test Alert — Student Performance MLOps",
+        message="Live alert paging webhook is connected and operational.",
+        severity="info",
+        fields={
+            "Active Model": _model_version,
+            "Storage": "postgres" if is_postgres_configured() else "local",
+        },
+    )
+
+
 @app.get("/telemetry/summary", tags=["Monitoring"])
 def telemetry_summary():
     """Return live telemetry buffer counts, latest drift report, and retrain status."""
     drift_dir = Path(os.environ.get("DRIFT_REPORTS_DIR", str(DRIFT_REPORTS_DIR)))
-    retrain_doc = _read_json_if_exists(drift_dir / "latest_status.json") or {}
+    retrain_doc = _get_latest_retrain_status(drift_dir)
     watermark = int(retrain_doc.get("watermark_rows", 0))
     buf_stats = get_live_buffer_stats(watermark_rows=watermark)
     return {
         "active_model_version": _model_version,
         "model_source": _model_source,
         "model_path": MODEL_PATH,
+        "storage_backend": "postgres" if is_postgres_configured() else "local",
+        "artifact_backend": "azure_blob" if is_azure_blob_configured() else "local",
+        "admin_auth_enabled": bool(get_configured_admin_key()),
+        "shadow": get_shadow_status(),
         "live_interactions_count": buf_stats["total_rows"],
         "window_interactions_count": buf_stats["window_rows"],
         "labeled_interactions_count": buf_stats["labeled_rows"],
         "live_intervention_rate": buf_stats["intervention_rate"],
         "feature_descriptions": FEATURE_DESCRIPTIONS,
-        "drift": _read_json_if_exists(drift_dir / "latest_drift_summary.json") or {},
+        "drift": _get_latest_drift_summary(drift_dir),
         "retrain": retrain_doc,
     }
 
 
-@app.post("/telemetry/reset", tags=["Monitoring"])
-def reset_telemetry_endpoint(rollback_to_baseline: bool = False):
+@app.post(
+    "/telemetry/reset",
+    tags=["Monitoring"],
+    dependencies=[Depends(require_admin_api_key)],
+)
+def reset_telemetry_endpoint(
+    rollback_to_baseline: bool = False,
+    include_students: bool = False,
+    include_pdfs: bool = False,
+    include_demo_artifacts: bool = False,
+):
     """Clear the live telemetry buffer and drift/retrain status for a clean demo reset."""
     global _scored_total_count, _scored_intervention_count
     drift_dir = Path(os.environ.get("DRIFT_REPORTS_DIR", str(DRIFT_REPORTS_DIR)))
-    out = reset_live_telemetry(buffer_path=get_live_buffer_path(), drift_dir=drift_dir)
+    out = reset_live_telemetry(drift_dir=drift_dir, include_students=include_students)
     _scored_total_count = 0
     _scored_intervention_count = 0
     if _PROMETHEUS_AVAILABLE:
         LIVE_INTERVENTION_RATIO.set(0.0)
+    if include_pdfs and _tutor_mod is not None and hasattr(_tutor_mod, "clear_uploaded_pdfs"):
+        try:
+            out["cleared_pdfs"] = int(_tutor_mod.clear_uploaded_pdfs())
+        except Exception as exc:
+            out["cleared_pdfs_error"] = str(exc)
+    if include_demo_artifacts:
+        clear_shadow_model()
+        # Clean local retrained/challenger artifacts (never touch models/baseline_model.pkl)
+        removed_local = []
+        for fname in ("retrained_champion.pkl", "challenger_model.pkl"):
+            fpath = REPO_ROOT / "models" / fname
+            if fpath.exists():
+                fpath.unlink()
+                removed_local.append(fname)
+        out["cleared_local_models"] = removed_local
+        try:
+            out["cleared_blob_models"] = ModelArtifactStore().delete_non_baseline_models()
+        except Exception as exc:
+            out["cleared_blob_models_error"] = str(exc)
+        # Clean demo @challenger alias & non-baseline MLflow versions (keep baseline @champion)
+        try:
+            from mlflow.tracking import MlflowClient
+            from src.register_model import CHALLENGER_ALIAS, CHAMPION_ALIAS, REGISTRY_MODEL_NAME
+            from src.utils import setup_mlflow
+
+            setup_mlflow(allow_local_fallback=True)
+            mc = MlflowClient()
+            rm = mc.get_registered_model(REGISTRY_MODEL_NAME)
+            try:
+                mc.delete_registered_model_alias(REGISTRY_MODEL_NAME, CHALLENGER_ALIAS)
+            except Exception:
+                pass
+            # Restore @champion to baseline v3 if present and delete demo versions > 3
+            versions = mc.search_model_versions(f"name='{REGISTRY_MODEL_NAME}'")
+            v_nums = {int(v.version) for v in versions}
+            baseline_ver = "3" if 3 in v_nums else (str(min(v_nums)) if v_nums else None)
+            if baseline_ver:
+                mc.set_registered_model_alias(REGISTRY_MODEL_NAME, CHAMPION_ALIAS, baseline_ver)
+            deleted_mlflow = []
+            keep_max = int(baseline_ver) if baseline_ver else 3
+            for mv in versions:
+                if int(mv.version) > keep_max:
+                    mc.delete_model_version(REGISTRY_MODEL_NAME, mv.version)
+                    deleted_mlflow.append(mv.version)
+            out["cleared_mlflow_versions"] = deleted_mlflow
+            out["mlflow_champion_version"] = baseline_ver or rm.aliases.get(CHAMPION_ALIAS)
+        except Exception as exc:
+            out["cleared_mlflow_error"] = str(exc)
     if rollback_to_baseline and os.path.exists(DEFAULT_MODEL_PATH):
         out["reload_result"] = reload_active_model(model_path=DEFAULT_MODEL_PATH)
-    _sync_drift_and_retrain_metrics()
+    _sync_drift_and_retrain_metrics(force=True)
     return out
 
 
-@app.post("/telemetry/simulate", tags=["Monitoring"])
+@app.post(
+    "/telemetry/simulate",
+    tags=["Monitoring"],
+    dependencies=[Depends(require_admin_api_key)],
+)
 def simulate_telemetry(body: SimulateRequest):
     """Generate and score a realistic student batch to demonstrate drift and retraining."""
     from src.monitoring import run_full_monitoring
@@ -1511,6 +2089,7 @@ def simulate_telemetry(body: SimulateRequest):
     correct_vals = [int(y) for y in batch_df[TARGET_COL].tolist()]
 
     _record_live_scoring_metrics(preds, probs)
+    _score_shadow_nonfatal(df, preds, correct_values=correct_vals)
     _log_predictions_nonfatal(
         instances,
         results,
@@ -1523,7 +2102,7 @@ def simulate_telemetry(body: SimulateRequest):
         PREDICTION_LATENCY.labels(endpoint="/predict/batch").observe(time.perf_counter() - start)
         BATCH_SIZE_HISTOGRAM.observe(len(instances))
 
-    retrain_doc = _read_json_if_exists(drift_dir / "latest_status.json") or {}
+    retrain_doc = _get_latest_retrain_status(drift_dir)
     watermark = int(retrain_doc.get("watermark_rows", 0))
     stats = get_live_buffer_stats(watermark_rows=watermark)
     intervention_rate = sum(1 for r in results if r.needs_intervention) / max(len(results), 1)
@@ -1533,11 +2112,11 @@ def simulate_telemetry(body: SimulateRequest):
     model_drift_detected = False
     if body.run_drift_check:
         ref_df = _resolve_active_reference_df(drift_dir, seed=body.seed)
-        live_window_df = load_live_interactions(
-            buffer_path=get_live_buffer_path(), labeled_only=True, since_row=watermark
-        )
+        live_window_df = load_live_interactions(labeled_only=True, since_row=watermark)
+        # Evaluate the full cumulative active window (capped at 2000 for speed) rather than
+        # only the latest batch, so mixed cohorts reflect true cumulative window drift.
         cur_eval_df = (
-            live_window_df.tail(max(body.count, 80)) if len(live_window_df) >= 20 else batch_df
+            live_window_df.tail(2000) if len(live_window_df) >= 20 else batch_df
         )
         has_labels = TARGET_COL in cur_eval_df.columns and TARGET_COL in ref_df.columns
         drift = run_full_monitoring(
@@ -1583,4 +2162,301 @@ def simulate_telemetry(body: SimulateRequest):
         "dataset_drifted": dataset_drifted,
         "model_drift_detected": model_drift_detected,
         "retrain_result": retrain_result,
+    }
+
+
+@app.get("/features/student/{student_id}", tags=["Feature Store"])
+def get_student_features(student_id: str, skill_name: Optional[str] = None):
+    """Fetch a student's expanding accuracy and per-skill opportunity from the Feature Store."""
+    try:
+        return get_storage().get_student_feature_context(student_id, skill_name=skill_name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/features/student/{student_id}/outcome", tags=["Feature Store"])
+def record_student_feature_outcome(student_id: str, body: StudentOutcomeRequest):
+    """Record a graded attempt outcome and update the student's online feature state."""
+    try:
+        return get_storage().record_student_outcome(
+            student_id=student_id,
+            skill_name=body.skill_name,
+            correct=body.correct,
+            display_name=body.display_name,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+# ---------------------------------------------------------------------------
+# Milestone 2: Real Interactive Student Assessment Loop
+# ---------------------------------------------------------------------------
+
+
+@app.get("/assessment/items", tags=["Assessment"])
+def list_assessment_items(skill_name: Optional[str] = None):
+    """List calibrated Digital Literacy practice items (without leaking answers)."""
+    storage = get_storage()
+    items = ensure_assessment_items_seeded(storage)
+    if skill_name:
+        items = [it for it in items if it.get("skill_name") == skill_name]
+    return {
+        "count": len(items),
+        "items": [sanitize_item_for_student(it) for it in items],
+    }
+
+
+@app.post("/assessment/start", tags=["Assessment"])
+def start_assessment_item(body: AssessmentStartRequest):
+    """Start a timed attempt session for a graded practice item."""
+    storage = get_storage()
+    items = ensure_assessment_items_seeded(storage)
+    if body.item_id:
+        item = storage.get_assessment_item(body.item_id)
+        if item is None:
+            raise HTTPException(
+                status_code=404, detail=f"Assessment item '{body.item_id}' not found."
+            )
+    else:
+        pool = [
+            it for it in items if not body.skill_name or it.get("skill_name") == body.skill_name
+        ]
+        if not pool:
+            raise HTTPException(status_code=404, detail="No assessment items found for skill.")
+        item = pool[0]
+
+    student_ctx = storage.get_student_feature_context(
+        body.student_id, skill_name=item["skill_name"]
+    )
+    session_id = uuid.uuid4().hex[:16]
+    started_perf = time.perf_counter()
+    with _assessment_sessions_lock:
+        if len(_assessment_sessions) > 2000:
+            # Evict oldest sessions to bound memory
+            for old_key in list(_assessment_sessions.keys())[:500]:
+                _assessment_sessions.pop(old_key, None)
+        _assessment_sessions[session_id] = {
+            "student_id": body.student_id.strip(),
+            "item_id": item["item_id"],
+            "started_perf": started_perf,
+            "first_response_ms": None,
+            "attempt_count": 0,
+            "hints_used": 0,
+            "bottom_hint_used": False,
+            "student_ctx_before": student_ctx,
+            "outcome_recorded": False,
+            "student_ctx_after": None,
+        }
+
+    return {
+        "attempt_session_id": session_id,
+        "started_at": datetime.now(timezone.utc).isoformat(),
+        "item": sanitize_item_for_student(item),
+        "student_context": student_ctx,
+    }
+
+
+@app.post("/assessment/hint", tags=["Assessment"])
+def request_assessment_hint(body: AssessmentHintRequest):
+    """Reveal a progressive conceptual hint (or bottom-out hint) and track hint usage."""
+    storage = get_storage()
+    ensure_assessment_items_seeded(storage)
+    item = storage.get_assessment_item(body.item_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail=f"Assessment item '{body.item_id}' not found.")
+    try:
+        hint_info = get_hint_for_item(item, body.hint_index)
+    except IndexError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if body.attempt_session_id:
+        with _assessment_sessions_lock:
+            sess = _assessment_sessions.get(body.attempt_session_id)
+            if sess is not None and sess.get("item_id") == item["item_id"]:
+                sess["hints_used"] = max(int(sess["hints_used"]), int(hint_info["hints_used"]))
+                if hint_info["is_bottom_hint"]:
+                    sess["bottom_hint_used"] = True
+
+    return hint_info
+
+
+@app.post("/assessment/submit", tags=["Assessment"])
+def submit_assessment_answer(body: AssessmentSubmitRequest):
+    """Grade a live student answer, compute all 11 features automatically, explain & log."""
+    start = time.perf_counter()
+    try:
+        model = get_model()
+    except RuntimeError as exc:
+        if _PROMETHEUS_AVAILABLE:
+            REQUEST_ERRORS.labels(endpoint="/predict", error_type="model_unavailable").inc()
+        raise HTTPException(status_code=503, detail=str(exc))
+
+    storage = get_storage()
+    ensure_assessment_items_seeded(storage)
+    item = storage.get_assessment_item(body.item_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail=f"Assessment item '{body.item_id}' not found.")
+
+    sess: Optional[dict[str, Any]] = None
+    if body.attempt_session_id:
+        with _assessment_sessions_lock:
+            sess = _assessment_sessions.get(body.attempt_session_id)
+            if sess is not None and sess.get("item_id") == item["item_id"]:
+                sess["attempt_count"] = int(sess.get("attempt_count", 0)) + 1
+                if sess.get("first_response_ms") is None:
+                    sess["first_response_ms"] = (
+                        time.perf_counter() - float(sess["started_perf"])
+                    ) * 1000.0
+
+    attempt_count = (
+        int(body.attempt_count)
+        if body.attempt_count is not None
+        else (int(sess["attempt_count"]) if sess is not None else 1)
+    )
+    hints_used = (
+        int(body.hints_used)
+        if body.hints_used is not None
+        else (int(sess["hints_used"]) if sess is not None else 0)
+    )
+    bottom_hint_used = (
+        bool(body.bottom_hint_used)
+        if body.bottom_hint_used is not None
+        else (bool(sess["bottom_hint_used"]) if sess is not None else False)
+    )
+    ms_first_response = (
+        float(body.ms_first_response)
+        if body.ms_first_response is not None
+        else (
+            float(sess["first_response_ms"])
+            if sess and sess.get("first_response_ms")
+            else 12000.0
+        )
+    )
+
+    # 1. Pull pre-item student history (anchored per item session so retries don't double-count)
+    if sess is not None and sess.get("student_ctx_before"):
+        student_ctx_before = sess["student_ctx_before"]
+    else:
+        student_ctx_before = storage.get_student_feature_context(
+            body.student_id, skill_name=item["skill_name"]
+        )
+    sanitized = sanitize_item_for_student(item)
+
+    # 2. Automatically compute all 11 canonical ENGINEERED_FEATURES
+    computed_dict = compute_11_engineered_features(
+        opportunity=student_ctx_before["opportunity"],
+        attempt_count=attempt_count,
+        hints_used=hints_used,
+        hint_total=sanitized["hint_total"],
+        bottom_hint_used=bottom_hint_used,
+        user_prev_acc=student_ctx_before["user_prev_acc"],
+        problem_difficulty=item["problem_difficulty"],
+        skill_difficulty=item["skill_difficulty"],
+        is_skill_unmapped=item.get("is_skill_unmapped", 0),
+        ms_first_response=ms_first_response,
+    )
+    features_obj = StudentFeatures(**computed_dict)
+
+    # 3. Grade real answer -> ground-truth binary outcome (0/1)
+    is_correct = body.selected_answer.strip() == str(item["correct_answer"]).strip()
+    correct_int = 1 if is_correct else 0
+
+    # 4. Run active Champion model + Monte-Carlo Shapley explanation
+    df = _build_feature_dataframe([features_obj])
+    preds, probs = _predict_with_probabilities(model, df)
+    pred_res = _format_prediction_response(preds[0], probs[0])
+    explanation = _compute_local_xai(model, features_obj)
+
+    interaction_id = uuid.uuid4().hex[:12]
+    _record_live_scoring_metrics(preds, probs)
+    _score_shadow_nonfatal(
+        df, preds, interaction_ids=[interaction_id], correct_values=[correct_int]
+    )
+
+    # 5. Persist labeled interaction event (with student_id & item_id) + update Feature Store
+    try:
+        append_interactions(
+            [
+                {
+                    **computed_dict,
+                    "session_id": interaction_id,
+                    "student_id": body.student_id.strip(),
+                    "item_id": item["item_id"],
+                    "source": "live_assessment",
+                    "skill_name": item["skill_name"],
+                    "opportunity": student_ctx_before["opportunity"],
+                    "prediction": pred_res.prediction,
+                    "probability": pred_res.probability,
+                    "needs_intervention": pred_res.needs_intervention,
+                    "model_version": pred_res.model_version,
+                    TARGET_COL: correct_int,
+                }
+            ]
+        )
+    except Exception:
+        pass
+
+    if sess is not None:
+        with _assessment_sessions_lock:
+            if not sess.get("outcome_recorded"):
+                sess["student_ctx_after"] = storage.record_student_outcome(
+                    student_id=body.student_id,
+                    skill_name=item["skill_name"],
+                    correct=correct_int,
+                )
+                sess["outcome_recorded"] = True
+            student_ctx_after = sess["student_ctx_after"]
+    else:
+        student_ctx_after = storage.record_student_outcome(
+            student_id=body.student_id,
+            skill_name=item["skill_name"],
+            correct=correct_int,
+        )
+
+    if _PROMETHEUS_AVAILABLE:
+        latency = time.perf_counter() - start
+        PREDICTION_COUNTER.labels(endpoint="/predict", result=str(pred_res.prediction)).inc()
+        PREDICTION_LATENCY.labels(endpoint="/predict").observe(latency)
+    _sync_drift_and_retrain_metrics()
+
+    # 3-tier pedagogical policy for live practice (preserves raw model P(correct) & 0.50 contract):
+    # - mastery: P >= 0.50
+    # - light_support: 0.25 <= P < 0.50 (e.g. 1 light hint on try 1) -> no forced auto-interrupt
+    # - tutor_intervention: P < 0.25 or bottom_hint or (attempt_count >= 2 and not is_correct)
+    tutor_threshold = float(os.environ.get("TUTOR_INTERVENTION_THRESHOLD", "0.25"))
+    severe_struggle = bool(
+        (pred_res.probability < tutor_threshold)
+        or bottom_hint_used
+        or (attempt_count >= 2 and not is_correct)
+    )
+    if pred_res.probability >= 0.5:
+        intervention_tier = "mastery"
+    elif severe_struggle:
+        intervention_tier = "tutor_intervention"
+    else:
+        intervention_tier = "light_support"
+
+    socratic_prompt = build_socratic_intervention_prompt(
+        item=item,
+        selected_answer=body.selected_answer,
+        is_correct=is_correct,
+        needs_intervention=severe_struggle,
+    )
+
+    return {
+        **pred_res.model_dump(),
+        "interaction_id": interaction_id,
+        "item_id": item["item_id"],
+        "skill_name": item["skill_name"],
+        "attempt_number": attempt_count,
+        "is_correct": is_correct,
+        "correct": correct_int,
+        "ms_first_response": round(ms_first_response, 1),
+        "computed_features": computed_dict,
+        "explanation": explanation,
+        "student_profile_before": student_ctx_before,
+        "student_profile_after": student_ctx_after,
+        "intervention_tier": intervention_tier,
+        "trigger_tutor": bool(severe_struggle and not is_correct),
+        "suggested_tutor_prompt": socratic_prompt,
     }

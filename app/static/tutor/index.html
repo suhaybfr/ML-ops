@@ -4,8 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Digital Literacy Assistant · Study room &amp; MLOps</title>
-  <link rel="stylesheet" href="/tutor/assets/study.css">
-  <script defer src="/tutor/assets/study.js"></script>
+  <link rel="stylesheet" href="/tutor/assets/study.css?v=m4">
+  <script defer src="/tutor/assets/study.js?v=m4"></script>
 </head>
 <body>
   <header class="site-header">
@@ -46,103 +46,240 @@
     <!-- =================================================================== -->
     <section id="tab-tutor" class="tab-view active-view" aria-label="Tutor and Assessment">
       <div class="tutor-layout">
-        <!-- Left Pane: Clean Student Telemetry Check-In -->
+        <!-- Left Pane: Live Practice Assessment + Manual 11-Feature Inspector -->
         <div class="card">
           <div class="section-head">
             <div>
-              <h2>Student Check-In</h2>
-              <p class="muted">Evaluate a problem attempt across the 11 ASSISTments features.</p>
+              <h2>Student Assessment</h2>
+              <p class="muted">Solve real graded items (auto-computing all 11 features) or inspect manually.</p>
             </div>
           </div>
 
-          <div class="segmented" role="group" aria-label="Student profile presets">
-            <button type="button" class="seg-btn" data-preset="mastery">Mastery</button>
-            <button type="button" class="seg-btn active" data-preset="struggling">Struggling</button>
-            <button type="button" class="seg-btn" data-preset="rapid">Rapid Guess</button>
+          <div class="segmented two-up" role="group" aria-label="Assessment mode">
+            <button type="button" id="mode-live-btn" class="mode-btn active" data-mode="live">Live Practice</button>
+            <button type="button" id="mode-manual-btn" class="mode-btn" data-mode="manual">Manual Inspector</button>
           </div>
 
-          <form id="telemetry-form" class="clean-form" novalidate>
-            <label class="field span-2">
-              <span>Topic module</span>
-              <select id="t-skill">
-                <option value="phishing_cyber_hygiene">Phishing &amp; Cyber Hygiene</option>
-                <option value="source_credibility">Evaluating Source Credibility</option>
-                <option value="digital_privacy">Protecting Digital Privacy</option>
-                <option value="search_strategies">Effective Search Strategies</option>
-                <option value="software_navigation">Navigating Software</option>
-              </select>
-            </label>
-
-            <label class="field">
-              <span>Attempts</span>
-              <input id="t-attempts" type="number" min="1" max="50" step="1" value="5">
-            </label>
-            <label class="field">
-              <span>Hints used</span>
-              <input id="t-hints" type="number" min="0" max="20" step="1" value="3">
-            </label>
-
-            <label class="field">
-              <span>Response time (s)</span>
-              <input id="t-rt-sec" type="number" min="0.1" max="600" step="any" value="40">
-            </label>
-            <label class="field">
-              <span>Prior accuracy (0–1)</span>
-              <input id="t-prev-acc" type="number" min="0" max="1" step="any" value="0.25">
-            </label>
-
-            <label class="field">
-              <span>Item pass rate (0–1)</span>
-              <input id="t-prob-diff" type="number" min="0.01" max="0.99" step="any" value="0.28">
-            </label>
-            <label class="field">
-              <span>Skill pass rate (0–1)</span>
-              <input id="t-skill-diff" type="number" min="0.01" max="0.99" step="any" value="0.38">
-            </label>
-
-            <label class="field">
-              <span>Practice count</span>
-              <input id="t-opp" type="number" min="1" max="200" step="1" value="1">
-            </label>
-            <label class="field check-row">
-              <input id="t-bottom-hint" type="checkbox" checked>
-              <span>Bottom-out hint viewed</span>
-            </label>
-
-            <label class="field check-row span-2">
-              <input id="t-auto-intervene" type="checkbox" checked>
-              <span>Automatically start Socratic tutor when intervention is needed</span>
-            </label>
-
-            <button id="score-btn" type="submit" class="btn-solid span-2">Evaluate Attempt</button>
-          </form>
-
-          <div id="predict-result" class="verdict-box" hidden>
-            <div class="verdict-row">
-              <div class="status-line">
-                <span id="verdict-dot" class="dot"></span>
-                <strong id="predict-badge">—</strong>
+          <!-- Mode A: Live Practice Assessment (Milestone 2) -->
+          <div id="live-practice-panel" class="lp-panel">
+            <!-- 1. Quiz Setup / Start Screen -->
+            <div id="lp-setup-view" class="lp-setup">
+              <div class="lp-controls">
+                <label class="field">
+                  <span>Student ID</span>
+                  <input id="lp-student-id" type="text" value="student_demo" maxlength="80">
+                </label>
+                <label class="field">
+                  <span>Topic Module</span>
+                  <select id="lp-skill-filter">
+                    <option value="">All Topics (18 questions)</option>
+                    <option value="phishing_cyber_hygiene">Phishing &amp; Cyber Hygiene (4)</option>
+                    <option value="source_credibility">Source Credibility (4)</option>
+                    <option value="digital_privacy">Digital Privacy (4)</option>
+                    <option value="search_strategies">Search Strategies (3)</option>
+                    <option value="software_navigation">Software Navigation (3)</option>
+                  </select>
+                </label>
               </div>
-              <span id="predict-prob" class="mono">—</span>
-            </div>
 
-            <div class="bar-track" aria-hidden="true">
-              <div id="prob-fill" class="bar-fill"></div>
-              <div class="bar-mid" title="50% decision threshold"></div>
-            </div>
-
-            <p id="xai-summary" class="verdict-copy"></p>
-
-            <div class="verdict-footer">
-              <button type="button" id="open-xai-btn" class="link-btn">Inspect all 11 feature attributions →</button>
-              <div class="outcome-btns">
-                <span class="muted-xs">Log outcome:</span>
-                <button type="button" id="fb-correct" class="btn-xs">Solved (1)</button>
-                <button type="button" id="fb-struggle" class="btn-xs">Struggled (0)</button>
+              <div class="lp-profile-row">
+                <span>Prior Accuracy: <strong id="lp-setup-acc" class="mono">70%</strong></span>
+                <span>Completed Items: <strong id="lp-setup-attempts" class="mono">0</strong></span>
               </div>
+
+              <button type="button" id="lp-start-quiz-btn" class="btn-solid">Start Quiz</button>
             </div>
-            <p id="fb-status" class="note" role="status"></p>
+
+            <!-- 2. Active / Paused Quiz Session -->
+            <div id="lp-active-view" class="lp-active" hidden>
+              <div class="lp-session-bar">
+                <div class="lp-session-stats mono">
+                  <span id="lp-q-progress">Q 1/18</span>
+                  <span class="lp-dot-sep">·</span>
+                  <span id="lp-score-pill">Solved 0</span>
+                  <span class="lp-dot-sep">·</span>
+                  <span id="lp-stat-timer">0.0s</span>
+                </div>
+                <div class="lp-session-btns">
+                  <button type="button" id="lp-pause-btn" class="btn-xs">Pause Quiz</button>
+                  <button type="button" id="lp-end-btn" class="btn-xs">End Quiz</button>
+                </div>
+              </div>
+
+              <div id="lp-paused-card" class="lp-paused-card" hidden>
+                <strong>Quiz Paused</strong>
+                <p class="muted-xs">Response timer is frozen so latency telemetry stays accurate.</p>
+                <button type="button" id="lp-resume-btn" class="btn-solid btn-xs">Resume Quiz</button>
+              </div>
+
+              <div id="lp-question-box" class="lp-question-box">
+                <div class="lp-q-head">
+                  <span id="lp-q-skill" class="mono-badge">Topic</span>
+                  <span class="muted-xs mono">Acc <strong id="lp-stat-acc">70%</strong> · Opp #<strong id="lp-stat-opp">1</strong></span>
+                </div>
+                <p id="lp-prompt" class="lp-prompt"></p>
+                <div id="lp-options" class="lp-options" role="radiogroup" aria-label="Answer choices"></div>
+                <div id="lp-hints-list" class="lp-hints" hidden></div>
+
+                <div class="lp-actions">
+                  <button type="button" id="lp-hint-btn" class="btn-outline btn-xs">Hint (0/3)</button>
+                  <div class="lp-actions-right">
+                    <button type="button" id="lp-submit-btn" class="btn-solid btn-xs">Submit Answer</button>
+                    <button type="button" id="lp-next-btn" class="btn-outline btn-xs">Next Question →</button>
+                  </div>
+                </div>
+              </div>
+
+              <div id="lp-attempt-banner" class="lp-banner" hidden>
+                <div class="lp-banner-top">
+                  <div class="lp-banner-head">
+                    <span id="lp-banner-dot" class="dot"></span>
+                    <strong id="lp-banner-title">—</strong>
+                  </div>
+                  <span id="lp-banner-prob" class="mono">—</span>
+                </div>
+                <div class="bar-track lp-bar-track" aria-hidden="true">
+                  <div id="lp-prob-fill" class="bar-fill"></div>
+                  <div class="bar-mid" title="50% intervention threshold"></div>
+                </div>
+                <p id="lp-banner-detail" class="lp-banner-detail"></p>
+                <div class="lp-banner-links">
+                  <button type="button" id="lp-open-xai-btn" class="link-btn">Shapley breakdown →</button>
+                  <button type="button" id="lp-ask-tutor-btn" class="link-btn" hidden>Ask Socratic Tutor →</button>
+                </div>
+                <details id="lp-computed-details" class="lp-computed" hidden>
+                  <summary class="muted-xs">View 11 auto-computed features</summary>
+                  <table class="lp-feat-table mono"><tbody id="lp-computed-grid"></tbody></table>
+                </details>
+              </div>
+
+              <p id="lp-feedback-line" class="note error-note" role="status" hidden></p>
+            </div>
+
+            <!-- 3. Quiz Summary Screen -->
+            <div id="lp-summary-view" class="lp-summary" hidden>
+              <div class="lp-summary-head">
+                <h3>Quiz Complete</h3>
+                <p id="lp-summary-sub" class="muted-xs">Session telemetry synced to Feature Store.</p>
+              </div>
+              <div class="lp-summary-grid">
+                <div class="lp-sum-cell">
+                  <span class="muted-xs">Questions Solved</span>
+                  <strong id="lp-sum-solved" class="mono">0 / 0</strong>
+                </div>
+                <div class="lp-sum-cell">
+                  <span class="muted-xs">First-Try Mastery</span>
+                  <strong id="lp-sum-first" class="mono">0%</strong>
+                </div>
+                <div class="lp-sum-cell">
+                  <span class="muted-xs">Hints Used</span>
+                  <strong id="lp-sum-hints" class="mono">0</strong>
+                </div>
+                <div class="lp-sum-cell">
+                  <span class="muted-xs">Tutor Interventions</span>
+                  <strong id="lp-sum-interventions" class="mono">0</strong>
+                </div>
+              </div>
+              <button type="button" id="lp-restart-btn" class="btn-solid">Start New Quiz</button>
+            </div>
           </div>
+
+          <!-- Mode B: Manual 11-Feature What-If Inspector -->
+          <div id="manual-inspector-panel" class="lp-panel" hidden>
+            <div class="segmented" role="group" aria-label="Student profile presets">
+              <button type="button" class="seg-btn" data-preset="mastery">Mastery</button>
+              <button type="button" class="seg-btn active" data-preset="struggling">Struggling</button>
+              <button type="button" class="seg-btn" data-preset="rapid">Rapid Guess</button>
+            </div>
+
+            <form id="telemetry-form" class="clean-form" novalidate>
+              <label class="field span-2">
+                <span>Topic module</span>
+                <select id="t-skill">
+                  <option value="phishing_cyber_hygiene">Phishing &amp; Cyber Hygiene</option>
+                  <option value="source_credibility">Evaluating Source Credibility</option>
+                  <option value="digital_privacy">Protecting Digital Privacy</option>
+                  <option value="search_strategies">Effective Search Strategies</option>
+                  <option value="software_navigation">Navigating Software</option>
+                </select>
+              </label>
+
+              <label class="field span-2">
+                <span>Student question / scenario (sent to tutor on intervention)</span>
+                <textarea id="t-question" rows="2" maxlength="1000">I received an urgent message claiming my university account will close unless I enter my password. How can I check if this is phishing?</textarea>
+              </label>
+
+              <label class="field">
+                <span>Attempts</span>
+                <input id="t-attempts" type="number" min="1" max="50" step="1" value="5">
+              </label>
+              <label class="field">
+                <span>Hints used</span>
+                <input id="t-hints" type="number" min="0" max="20" step="1" value="3">
+              </label>
+
+              <label class="field">
+                <span>Response time (s)</span>
+                <input id="t-rt-sec" type="number" min="0.1" max="600" step="any" value="40">
+              </label>
+              <label class="field">
+                <span>Prior accuracy (0–1)</span>
+                <input id="t-prev-acc" type="number" min="0" max="1" step="any" value="0.25">
+              </label>
+
+              <label class="field">
+                <span>Item pass rate (0–1)</span>
+                <input id="t-prob-diff" type="number" min="0.01" max="0.99" step="any" value="0.28">
+              </label>
+              <label class="field">
+                <span>Skill pass rate (0–1)</span>
+                <input id="t-skill-diff" type="number" min="0.01" max="0.99" step="any" value="0.38">
+              </label>
+
+              <label class="field">
+                <span>Practice count</span>
+                <input id="t-opp" type="number" min="1" max="200" step="1" value="1">
+              </label>
+              <label class="field check-row">
+                <input id="t-bottom-hint" type="checkbox" checked>
+                <span>Bottom-out hint viewed</span>
+              </label>
+
+              <button id="score-btn" type="submit" class="btn-solid span-2">Evaluate Attempt</button>
+            </form>
+
+            <div id="predict-result" class="verdict-box" hidden>
+              <div class="verdict-row">
+                <div class="status-line">
+                  <span id="verdict-dot" class="dot"></span>
+                  <strong id="predict-badge">—</strong>
+                </div>
+                <span id="predict-prob" class="mono">—</span>
+              </div>
+
+              <div class="bar-track" aria-hidden="true">
+                <div id="prob-fill" class="bar-fill"></div>
+                <div class="bar-mid" title="50% decision threshold"></div>
+              </div>
+
+              <p id="xai-summary" class="verdict-copy"></p>
+
+              <div class="verdict-footer">
+                <button type="button" id="open-xai-btn" class="link-btn">Inspect all 11 feature attributions →</button>
+                <div class="outcome-btns">
+                  <span class="muted-xs">Log outcome:</span>
+                  <button type="button" id="fb-correct" class="btn-xs">Solved (1)</button>
+                  <button type="button" id="fb-struggle" class="btn-xs">Struggled (0)</button>
+                </div>
+              </div>
+              <p id="fb-status" class="note" role="status"></p>
+            </div>
+          </div>
+
+          <label class="field check-row">
+            <input id="t-auto-intervene" type="checkbox" checked>
+            <span>Auto-trigger Socratic tutor when model flags struggle</span>
+          </label>
         </div>
 
         <!-- Right Pane: Socratic RAG Conversation -->
@@ -293,7 +430,7 @@
           <div class="card kpi-card">
             <span class="kpi-label">Active Window / Total Logged</span>
             <strong id="stat-rows" class="kpi-value">0 / 0</strong>
-            <span class="muted-xs">Persisted in <code>data/live/interactions.csv</code></span>
+            <span class="muted-xs">Persisted in <code id="stat-storage-label">data/live/interactions.csv</code></span>
           </div>
           <div class="card kpi-card">
             <span class="kpi-label">Covariate Drift Share</span>
@@ -324,9 +461,25 @@
 
             <div class="toolbar-group">
               <span class="muted-xs">2. Model Lifecycle:</span>
-              <button type="button" id="retrain-btn" class="btn-solid">Retrain &amp; Hot-Reload</button>
+              <button type="button" id="retrain-shadow-btn" class="btn-solid" title="Run out-of-band async retrain, upload to Azure Blob, and deploy in Shadow Challenger Mode">Retrain → Shadow (Async)</button>
+              <button type="button" id="retrain-btn" class="btn-outline">Retrain &amp; Hot-Reload</button>
               <button type="button" id="rollback-btn" class="btn-outline">Rollback to v2</button>
               <button type="button" id="reset-demo-btn" class="btn-outline">Reset Window</button>
+              <button type="button" id="full-reset-btn" class="btn-outline" title="Also clears demo students and uploaded PDFs">Full Demo Reset</button>
+            </div>
+
+            <div id="admin-auth-bar" class="toolbar-group" hidden>
+              <span class="muted-xs">Admin Key:</span>
+              <input id="admin-key-input" type="password" placeholder="Enter ADMIN_API_KEY" style="padding:5px 8px;border:1px solid var(--border-strong);border-radius:5px;font-size:12.5px;width:210px;">
+              <button type="button" id="save-admin-key-btn" class="btn-xs">Unlock Ops</button>
+              <span id="admin-key-status" class="muted-xs"></span>
+            </div>
+
+            <div id="shadow-status-bar" class="toolbar-group" hidden>
+              <span class="muted-xs">3. Shadow Challenger:</span>
+              <span id="shadow-summary-text" class="mono" style="font-size:12.5px;">Inactive</span>
+              <button type="button" id="promote-shadow-btn" class="btn-solid btn-xs">Promote Shadow → Champion</button>
+              <button type="button" id="clear-shadow-btn" class="btn-outline btn-xs">Clear Shadow</button>
             </div>
           </div>
 

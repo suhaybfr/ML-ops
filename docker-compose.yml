@@ -34,6 +34,15 @@ services:
       - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
       - GEMINI_MODEL=${GEMINI_MODEL:-gemini-flash-lite-latest}
       - CHROMA_PERSIST_DIR=/app/chroma_db
+      # Milestone 1 cloud persistence (optional — falls back to local CSV/Chroma when unset)
+      - DATABASE_URL=${DATABASE_URL:-}
+      - SUPABASE_URL=${SUPABASE_URL:-}
+      - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY:-}
+      - SUPABASE_STORAGE_BUCKET=${SUPABASE_STORAGE_BUCKET:-${SUPABASE_PDF_BUCKET:-course-pdfs}}
+      # Milestone 3 security & Azure Blob artifact store (optional in local dev)
+      - ADMIN_API_KEY=${ADMIN_API_KEY:-}
+      - AZURE_STORAGE_CONNECTION_STRING=${AZURE_STORAGE_CONNECTION_STRING:-}
+      - AZURE_STORAGE_CONTAINER=${AZURE_STORAGE_CONTAINER:-models}
     volumes:
       - ./models:/app/models
       - ./data/processed:/app/data/processed:ro
@@ -67,15 +76,16 @@ services:
     profiles: ["monitoring", "phase3", "full"]
     ports:
       - "9090:9090"
+    environment:
+      - ADMIN_API_KEY=${ADMIN_API_KEY:-}
     volumes:
       - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./monitoring/prometheus/alert_rules.yml:/etc/prometheus/alert_rules.yml:ro
       - prometheus_data:/prometheus
-    command:
-      - "--config.file=/etc/prometheus/prometheus.yml"
-      - "--storage.tsdb.path=/prometheus"
-      - "--storage.tsdb.retention.time=15d"
-      - "--web.enable-lifecycle"
+    entrypoint:
+      - "/bin/sh"
+      - "-c"
+      - "printf '%s' \"$$ADMIN_API_KEY\" > /tmp/prometheus_token && exec /bin/prometheus --config.file=/etc/prometheus/prometheus.yml --storage.tsdb.path=/prometheus --storage.tsdb.retention.time=15d --web.enable-lifecycle"
     depends_on:
       - api
     restart: unless-stopped

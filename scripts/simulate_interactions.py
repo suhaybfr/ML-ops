@@ -113,7 +113,8 @@ def simulate_locally(
     if run_drift:
         ref_path = REPO_ROOT / "data" / "processed" / "train.csv"
         if ref_path.exists():
-            ref_df = pd.read_csv(ref_path).sample(n=min(2000, 80000), random_state=seed)
+            ref_raw = pd.read_csv(ref_path)
+            ref_df = ref_raw.sample(n=min(len(ref_raw), 2000), random_state=seed)
         else:
             ref_df = generate_simulated_batch(
                 profile="normal", count=max(rows, 300), seed=seed + 7

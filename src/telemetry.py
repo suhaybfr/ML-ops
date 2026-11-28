@@ -9,22 +9,38 @@ interactions feed directly into drift checks and ``src/retrain.py``.
 
 from __future__ import annotations
 
-import csv
 import math
 import os
 import threading
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
 import numpy as np
 import pandas as pd
 
-from src.features import ENGINEERED_FEATURES, TARGET_COL
+from src.features import TARGET_COL
 from src.induce_drift import generate_synthetic_baseline, induce_concept_drift
+from src.storage import (
+    DEFAULT_LIVE_BUFFER_PATH,
+    LocalStorageBackend,
+    TELEMETRY_COLUMNS,
+    get_storage,
+)
+
+__all__ = [
+    "DEFAULT_LIVE_BUFFER_PATH",
+    "FEATURE_DESCRIPTIONS",
+    "TELEMETRY_COLUMNS",
+    "append_interactions",
+    "generate_simulated_batch",
+    "get_live_buffer_path",
+    "get_live_buffer_stats",
+    "load_live_interactions",
+    "reset_live_telemetry",
+    "upsert_interaction_outcome",
+]
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_LIVE_BUFFER_PATH = REPO_ROOT / "data" / "live" / "interactions.csv"
 
 FEATURE_DESCRIPTIONS: dict[str, dict[str, Any]] = {
     "log_opportunity": {
@@ -95,20 +111,6 @@ FEATURE_DESCRIPTIONS: dict[str, dict[str, Any]] = {
     },
 }
 
-TELEMETRY_COLUMNS: list[str] = [
-    "timestamp",
-    "session_id",
-    "source",
-    "skill_name",
-    "opportunity",
-    *ENGINEERED_FEATURES,
-    "prediction",
-    "probability",
-    "needs_intervention",
-    "model_version",
-    TARGET_COL,
-]
-
 _buffer_lock = threading.Lock()
 
 
@@ -116,6 +118,13 @@ def get_live_buffer_path() -> Path:
     """Resolve the active live interactions CSV path (overridable via env var)."""
     env_path = os.environ.get("LIVE_INTERACTIONS_PATH", "").strip()
     return Path(env_path) if env_path else DEFAULT_LIVE_BUFFER_PATH
+
+
+def _resolve_backend(buffer_path: Optional[str | Path] = None):
+    """Use the active storage backend unless an explicit CSV path override is passed."""
+    if buffer_path is not None:
+        return LocalStorageBackend(buffer_path=Path(buffer_path))
+    return get_storage()
 
 
 def _derive_opportunity(log_opportunity: float) -> int:
@@ -129,48 +138,8 @@ def append_interactions(
     rows: Iterable[dict[str, Any]],
     buffer_path: Optional[str | Path] = None,
 ) -> int:
-    """Thread-safely append one or more interaction records to the live CSV buffer."""
-    target = Path(buffer_path) if buffer_path is not None else get_live_buffer_path()
-    records = list(rows)
-    if not records:
-        return 0
-
-    now_iso = datetime.now(timezone.utc).isoformat()
-    formatted: list[dict[str, Any]] = []
-    for rec in records:
-        skill = rec.get("skill_name")
-        if not skill:
-            unmapped = int(float(rec.get("is_skill_unmapped", 0))) == 1
-            skill = "Unknown" if unmapped else "Digital Literacy"
-        raw_target = rec.get(TARGET_COL)
-        target_val = "" if raw_target is None or raw_target == "" else int(raw_target)
-        opp_val = rec.get("opportunity") or _derive_opportunity(rec.get("log_opportunity", 0.0))
-        row = {
-            "timestamp": rec.get("timestamp") or now_iso,
-            "session_id": rec.get("session_id") or "",
-            "source": rec.get("source") or "api_predict",
-            "skill_name": skill,
-            "opportunity": opp_val,
-            "prediction": int(rec["prediction"]),
-            "probability": round(float(rec["probability"]), 6),
-            "needs_intervention": int(bool(rec["needs_intervention"])),
-            "model_version": str(rec.get("model_version") or "unknown"),
-            TARGET_COL: target_val,
-        }
-        for col in ENGINEERED_FEATURES:
-            row[col] = float(rec[col])
-        formatted.append(row)
-
-    with _buffer_lock:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        write_header = not target.exists() or target.stat().st_size == 0
-        with open(target, "a", encoding="utf-8", newline="") as fh:
-            writer = csv.DictWriter(fh, fieldnames=TELEMETRY_COLUMNS)
-            if write_header:
-                writer.writeheader()
-            writer.writerows(formatted)
-
-    return len(formatted)
+    """Thread-safely append one or more interaction records to the active store."""
+    return _resolve_backend(buffer_path).append_interactions(rows)
 
 
 def upsert_interaction_outcome(
@@ -183,30 +152,11 @@ def upsert_interaction_outcome(
 
     Returns ``True`` if an existing row was updated in-place, ``False`` if newly appended.
     """
-    target = Path(buffer_path) if buffer_path is not None else get_live_buffer_path()
-    with _buffer_lock:
-        if target.exists() and target.stat().st_size > 0 and interaction_id:
-            with open(target, "r", encoding="utf-8", newline="") as fh:
-                rows = list(csv.DictReader(fh))
-            matched = False
-            for r in reversed(rows):
-                if r.get("session_id") == interaction_id:
-                    r[TARGET_COL] = str(int(correct))
-                    matched = True
-                    break
-            if matched:
-                with open(target, "w", encoding="utf-8", newline="") as fh:
-                    writer = csv.DictWriter(fh, fieldnames=TELEMETRY_COLUMNS)
-                    writer.writeheader()
-                    writer.writerows(rows)
-                return True
-
-    if fallback_record is not None:
-        rec = dict(fallback_record)
-        rec["session_id"] = interaction_id
-        rec[TARGET_COL] = int(correct)
-        append_interactions([rec], buffer_path=target)
-    return False
+    return _resolve_backend(buffer_path).upsert_interaction_outcome(
+        interaction_id=interaction_id,
+        correct=correct,
+        fallback_record=fallback_record,
+    )
 
 
 def load_live_interactions(
@@ -215,50 +165,22 @@ def load_live_interactions(
     since_row: int = 0,
 ) -> pd.DataFrame:
     """Load the live interactions buffer as a DataFrame (optionally sliced after watermark)."""
-    target = Path(buffer_path) if buffer_path is not None else get_live_buffer_path()
-    if not target.exists() or target.stat().st_size == 0:
-        return pd.DataFrame(columns=TELEMETRY_COLUMNS)
-
-    with _buffer_lock:
-        df = pd.read_csv(target)
-
-    if since_row > 0:
-        df = df.iloc[since_row:].copy()
-
-    for col in ENGINEERED_FEATURES:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors="coerce")
-
-    if TARGET_COL in df.columns:
-        df[TARGET_COL] = pd.to_numeric(df[TARGET_COL], errors="coerce")
-
-    if labeled_only and TARGET_COL in df.columns:
-        df = df[df[TARGET_COL].isin([0, 1])].copy()
-        df[TARGET_COL] = df[TARGET_COL].astype(int)
-
-    return df.reset_index(drop=True)
+    return _resolve_backend(buffer_path).load_interactions(
+        labeled_only=labeled_only,
+        since_row=since_row,
+    )
 
 
 def reset_live_telemetry(
     buffer_path: Optional[str | Path] = None,
     drift_dir: Optional[str | Path] = None,
+    include_students: bool = False,
 ) -> dict[str, Any]:
-    """Clear the live interactions buffer and generated drift/retrain JSON files."""
-    target = Path(buffer_path) if buffer_path is not None else get_live_buffer_path()
-    with _buffer_lock:
-        if target.exists():
-            target.unlink()
-
-    removed_files = []
-    if drift_dir is not None:
-        dpath = Path(drift_dir)
-        if dpath.exists():
-            for item in dpath.iterdir():
-                if item.is_file() and item.suffix in {".json", ".html", ".csv"}:
-                    item.unlink()
-                    removed_files.append(item.name)
-
-    return {"reset": True, "buffer_path": str(target), "cleared_drift_files": removed_files}
+    """Clear the live interactions buffer and generated drift/retrain state."""
+    dpath = Path(drift_dir) if drift_dir is not None else None
+    return _resolve_backend(buffer_path).reset_telemetry(
+        drift_dir=dpath, include_students=include_students
+    )
 
 
 def get_live_buffer_stats(
@@ -266,31 +188,7 @@ def get_live_buffer_stats(
     watermark_rows: int = 0,
 ) -> dict[str, Any]:
     """Return summary counts (total + post-retrain window) for Prometheus and UI."""
-    df = load_live_interactions(buffer_path=buffer_path, labeled_only=False)
-    total = int(len(df))
-    if total == 0:
-        return {
-            "total_rows": 0,
-            "labeled_rows": 0,
-            "window_rows": 0,
-            "intervention_rate": 0.0,
-            "buffer_path": str(Path(buffer_path) if buffer_path else get_live_buffer_path()),
-        }
-
-    labeled = int(df[TARGET_COL].isin([0, 1]).sum()) if TARGET_COL in df.columns else 0
-    window_df = df.iloc[watermark_rows:] if 0 < watermark_rows < total else df
-    interventions = (
-        float(pd.to_numeric(window_df["needs_intervention"], errors="coerce").fillna(0).mean())
-        if "needs_intervention" in window_df.columns and len(window_df) > 0
-        else 0.0
-    )
-    return {
-        "total_rows": total,
-        "labeled_rows": labeled,
-        "window_rows": int(len(df) - min(watermark_rows, total)),
-        "intervention_rate": round(interventions, 4),
-        "buffer_path": str(Path(buffer_path) if buffer_path else get_live_buffer_path()),
-    }
+    return _resolve_backend(buffer_path).get_interaction_stats(watermark_rows=watermark_rows)
 
 
 def generate_simulated_batch(

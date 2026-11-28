@@ -16,6 +16,16 @@ for p in (str(ROOT_DIR), str(SRC_DIR)):
         sys.path.insert(0, p)
 
 
+@pytest.fixture(autouse=True)
+def _reset_rate_limiters_per_test():
+    """Keep per-IP rate-limiter buckets isolated across tests."""
+    from src.security import reset_rate_limiters
+
+    reset_rate_limiters()
+    yield
+    reset_rate_limiters()
+
+
 @pytest.fixture
 def mastery_payload() -> dict:
     """Representative 11-feature payload for a high-mastery student attempt."""

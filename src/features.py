@@ -75,7 +75,9 @@ def validate_engineered_dataframe(df: pd.DataFrame) -> None:
 
     unique_targets = set(df[TARGET_COL].unique())
     if not unique_targets.issubset({0, 1}):
-        raise ValueError(f"Target column {TARGET_COL!r} must be binary {{0, 1}}, got {unique_targets}")
+        raise ValueError(
+            f"Target column {TARGET_COL!r} must be binary {{0, 1}}, got {unique_targets}"
+        )
 
 
 def select_xy(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series]:

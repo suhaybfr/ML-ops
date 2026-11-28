@@ -67,9 +67,18 @@ jobs:
       - name: Run offline Model-Risk & Slice Quality Gate
         run: python -m src.validate_model
 
+      - name: Run offline Socratic Tutor Adversarial & Citation Eval Gate
+        env:
+          GOOGLE_API_KEY: ""
+          DATABASE_URL: ""
+        run: python -m src.evaluate_tutor
+
       - name: Run PyTest with coverage
         env:
           MLFLOW_OFFLINE: "1"
+          DATABASE_URL: ""
+          ADMIN_API_KEY: ""
+          AZURE_STORAGE_CONNECTION_STRING: ""
           # Tutor tests are fully offline (fake Gemini LLM + mock embeddings); force an
           # empty key so CI never depends on secrets (e.g. PRs from forks).
           GOOGLE_API_KEY: ""
@@ -544,3 +553,67 @@ jobs:
 
           gh pr comment "$PR_NUMBER" --body-file pr_comment.md || \
             echo "Could not post PR comment (non-fatal)"
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # JOB 6 ─ Milestone 5 CD: Deploy Verified Image to Azure Container Apps
+  # ─────────────────────────────────────────────────────────────────────────
+  deploy-azure:
+    name: Deploy to Azure Container Apps
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: docker-push
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+
+    steps:
+      - name: Check Azure CD credentials
+        id: check_az
+        env:
+          AZURE_CREDENTIALS: ${{ secrets.AZURE_CREDENTIALS }}
+        run: |
+          if [ -n "$AZURE_CREDENTIALS" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "AZURE_CREDENTIALS secret not configured yet — skipping Azure CD rollout."
+          fi
+
+      - name: Azure Login
+        if: steps.check_az.outputs.enabled == 'true'
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Roll out GHCR image to Azure Container App & Scheduled Retrain Job
+        if: steps.check_az.outputs.enabled == 'true'
+        env:
+          RG: ${{ vars.AZURE_RESOURCE_GROUP || 'mlops-platform-rg' }}
+          APP_NAME: ${{ vars.ACA_APP_NAME || 'student-performance-api' }}
+          JOB_NAME: ${{ vars.ACA_JOB_NAME || 'student-retrain-worker' }}
+        run: |
+          set -euo pipefail
+          OWNER_LC=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          IMAGE="ghcr.io/${OWNER_LC}/${{ env.IMAGE_NAME }}:sha-${GITHUB_SHA::7}"
+          az extension add --name containerapp --upgrade --only-show-errors >/dev/null 2>&1 || true
+
+          az containerapp update \
+            --name "$APP_NAME" \
+            --resource-group "$RG" \
+            --image "$IMAGE" \
+            -o none
+
+          if az containerapp job show --name "$JOB_NAME" --resource-group "$RG" >/dev/null 2>&1; then
+            az containerapp job update \
+              --name "$JOB_NAME" \
+              --resource-group "$RG" \
+              --image "$IMAGE" \
+              -o none
+          fi
+
+          FQDN=$(az containerapp show --name "$APP_NAME" --resource-group "$RG" \
+            --query properties.configuration.ingress.fqdn -o tsv)
+          echo "Verifying https://${FQDN}/health ..."
+          curl -fsS "https://${FQDN}/health"
+          echo ""
+          echo "## Azure Container Apps Rollout Complete" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Image:** \`${IMAGE}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Live URL:** https://${FQDN}/tutor/" >> "$GITHUB_STEP_SUMMARY"

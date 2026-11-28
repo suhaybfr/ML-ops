@@ -178,3 +178,19 @@ class PdfLibrary:
                 raise HTTPException(
                     500, f"PDF indexing failed: {type(exc).__name__}: {exc}"
                 ) from exc
+
+    def delete(self, digest: str) -> bool:
+        with _writer:
+            collection = self.lookup(digest)
+            if collection is None:
+                return False
+            self.client.delete_collection(collection.name)
+            return True
+
+    def clear_all(self) -> int:
+        removed = 0
+        with _writer:
+            for collection in list(self._iter_ready_collections()):
+                self.client.delete_collection(collection.name)
+                removed += 1
+        return removed

@@ -161,7 +161,9 @@ def model_risk_diagnostics(
         if n_sub >= 20 and len(np.unique(y_true_arr[mask_arr])) == 2:
             slice_report[s_name] = {
                 "samples": n_sub,
-                "accuracy": round(float(accuracy_score(y_true_arr[mask_arr], y_pred_arr[mask_arr])), 4),
+                "accuracy": round(
+                    float(accuracy_score(y_true_arr[mask_arr], y_pred_arr[mask_arr])), 4
+                ),
                 "f1_score": round(
                     float(f1_score(y_true_arr[mask_arr], y_pred_arr[mask_arr], zero_division=0)), 4
                 ),
@@ -176,7 +178,9 @@ def model_risk_diagnostics(
                     ),
                     4,
                 ),
-                "roc_auc": round(float(roc_auc_score(y_true_arr[mask_arr], y_score_arr[mask_arr])), 4),
+                "roc_auc": round(
+                    float(roc_auc_score(y_true_arr[mask_arr], y_score_arr[mask_arr])), 4
+                ),
             }
     diagnostics["slices"] = slice_report
     return diagnostics

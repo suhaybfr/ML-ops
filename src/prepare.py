@@ -9,7 +9,6 @@ and writes ``data/processed/train.csv``, ``data/processed/test.csv``, and
 
 from __future__ import annotations
 
-import os
 import sys
 from pathlib import Path
 
@@ -63,7 +62,10 @@ def prepare_data() -> dict:
     # Stratified subsample for fast reproducible pipeline execution
     sample_size = params.get("sample_size")
     if sample_size and sample_size < len(df):
-        print(f"[Prepare] Stratified subsample to {sample_size:,} rows (seed={params['random_state']})")
+        print(
+            f"[Prepare] Stratified subsample to {sample_size:,} rows "
+            f"(seed={params['random_state']})"
+        )
         df, _ = train_test_split(
             df,
             train_size=sample_size,

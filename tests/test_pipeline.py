@@ -31,7 +31,6 @@ from sklearn.pipeline import Pipeline
 from src.evaluation import (
     classification_metrics,
     confusion_counts,
-    model_risk_diagnostics,
     positive_scores,
     squared_correlation,
 )

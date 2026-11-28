@@ -21,9 +21,11 @@ chroma_db/
 
 # Drift reports & live telemetry buffers (generated artifacts — not source-controlled)
 reports/drift/
+reports/tutor_eval_report.json
 data/live/
 models/retrained_*.pkl
 models/challenger_*.pkl
+models/artifacts/
 
 # Coverage reports
 coverage.xml

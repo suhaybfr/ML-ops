@@ -199,11 +199,19 @@ def _extract_drift_summary(report_dict: dict) -> dict:
     return summary
 
 
-def _write_latest_summary(output_dir: str, payload: dict) -> str:
-    """Write standardized ``latest_drift_summary.json`` for API/Grafana consumption."""
+def _write_latest_summary(output_dir: str, payload: dict, save_to_db: bool = True) -> str:
+    """Write standardized ``latest_drift_summary.json`` and mirror to Postgres if configured."""
     latest_path = os.path.join(output_dir, "latest_drift_summary.json")
     with open(latest_path, "w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2, default=str)
+    if save_to_db:
+        try:
+            from src.storage import get_storage, is_postgres_configured
+
+            if is_postgres_configured():
+                get_storage().save_drift_snapshot(payload)
+        except Exception as exc:
+            print(f"[Monitoring] Notice: Postgres drift snapshot save skipped ({exc})")
     return latest_path
 
 
@@ -272,6 +280,7 @@ def compute_drift_report(
     output_dir: str = os.path.join("reports", "drift"),
     tag: Optional[str] = None,
     log_to_mlflow: bool = False,
+    _save_to_db: bool = True,
 ) -> dict:
     """Generate a data-drift report across the 11 engineered features."""
     os.makedirs(output_dir, exist_ok=True)
@@ -365,7 +374,9 @@ def compute_drift_report(
         "json_path": json_path,
         "model_drift": None,
     }
-    drift_results["latest_summary_path"] = _write_latest_summary(output_dir, summary_payload)
+    drift_results["latest_summary_path"] = _write_latest_summary(
+        output_dir, summary_payload, save_to_db=_save_to_db
+    )
 
     print(f"[Monitoring] Engine: {engine} | Drift report written to {html_path}")
     print(
@@ -469,10 +480,21 @@ def evaluate_model_drift(
     if TARGET_COL not in reference_df.columns or TARGET_COL not in current_df.columns:
         raise ValueError(f"Both reference and current datasets must contain '{TARGET_COL}'.")
 
-    X_ref = reference_df[shared_features].astype(float)
-    y_ref = reference_df[TARGET_COL].astype(int).to_numpy()
-    X_cur = current_df[shared_features].astype(float)
-    y_cur = current_df[TARGET_COL].astype(int).to_numpy()
+    ref_valid = reference_df.copy()
+    cur_valid = current_df.copy()
+    ref_valid[TARGET_COL] = pd.to_numeric(ref_valid[TARGET_COL], errors="coerce")
+    cur_valid[TARGET_COL] = pd.to_numeric(cur_valid[TARGET_COL], errors="coerce")
+    ref_valid = ref_valid[ref_valid[TARGET_COL].isin([0, 1])].reset_index(drop=True)
+    cur_valid = cur_valid[cur_valid[TARGET_COL].isin([0, 1])].reset_index(drop=True)
+    if len(ref_valid) == 0 or len(cur_valid) == 0:
+        raise ValueError(
+            "Both reference and current datasets must have at least one labeled binary target row."
+        )
+
+    X_ref = ref_valid[shared_features].astype(float)
+    y_ref = ref_valid[TARGET_COL].astype(int).to_numpy()
+    X_cur = cur_valid[shared_features].astype(float)
+    y_cur = cur_valid[TARGET_COL].astype(int).to_numpy()
 
     ref_pred = model.predict(X_ref)
     ref_score = positive_scores(model, X_ref)
@@ -484,10 +506,10 @@ def evaluate_model_drift(
 
     supports_proba = bool(hasattr(model, "predict_proba"))
     ref_risk = model_risk_diagnostics(
-        reference_df, y_ref, ref_pred, ref_score, is_probability=supports_proba
+        ref_valid, y_ref, ref_pred, ref_score, is_probability=supports_proba
     )
     cur_risk = model_risk_diagnostics(
-        current_df, y_cur, cur_pred, cur_score, is_probability=supports_proba
+        cur_valid, y_cur, cur_pred, cur_score, is_probability=supports_proba
     )
 
     ref_c0_rec = ref_risk["struggling_student_class0"]["recall_specificity"]
@@ -503,8 +525,8 @@ def evaluate_model_drift(
         or c0_recall_drop >= f1_drop_threshold
     )
 
-    ref_with_pred = reference_df.copy()
-    cur_with_pred = current_df.copy()
+    ref_with_pred = ref_valid.copy()
+    cur_with_pred = cur_valid.copy()
     ref_with_pred["prediction"] = ref_pred
     cur_with_pred["prediction"] = cur_pred
     cls_html = compute_classification_report(
@@ -543,24 +565,31 @@ def run_full_monitoring(
 ) -> dict:
     """Run data drift and (optionally) model performance drift together."""
     tag = tag or datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    will_eval_model = bool(model_path and os.path.exists(model_path))
     drift_results = compute_drift_report(
         reference_df,
         current_df,
         output_dir=output_dir,
         tag=tag,
         log_to_mlflow=False,
+        _save_to_db=not will_eval_model,
     )
 
     model_drift = None
-    if model_path and os.path.exists(model_path):
-        model_drift = evaluate_model_drift(
-            reference_df,
-            current_df,
-            model_path,
-            output_dir=output_dir,
-            tag=tag,
-            f1_drop_threshold=f1_drop_threshold,
-        )
+    if will_eval_model:
+        try:
+            model_drift = evaluate_model_drift(
+                reference_df,
+                current_df,
+                model_path,
+                output_dir=output_dir,
+                tag=tag,
+                f1_drop_threshold=f1_drop_threshold,
+            )
+        except ValueError as exc:
+            print(f"[Monitoring] Notice: model drift check skipped ({exc})")
+            model_drift = None
+    if model_drift is not None:
         drift_results["model_drift"] = model_drift
         drift_results["classification_html_path"] = model_drift.get("classification_html_path")
 
@@ -568,10 +597,40 @@ def run_full_monitoring(
         with open(latest_path, "r", encoding="utf-8") as f:
             latest_payload = json.load(f)
         latest_payload["model_drift"] = model_drift
-        _write_latest_summary(output_dir, latest_payload)
+        _write_latest_summary(output_dir, latest_payload, save_to_db=True)
+    elif will_eval_model:
+        latest_path = drift_results["latest_summary_path"]
+        with open(latest_path, "r", encoding="utf-8") as f:
+            latest_payload = json.load(f)
+        _write_latest_summary(output_dir, latest_payload, save_to_db=True)
 
     if log_to_mlflow:
         _log_drift_to_mlflow(tag, drift_results, model_drift=model_drift)
+
+    # Milestone 5: Optional Discord / webhook paging on covariate or concept drift
+    try:
+        from src.alerts import send_alert_webhook
+
+        is_data_drift = bool(drift_results.get("dataset_drifted", False))
+        is_model_drift = bool((model_drift or {}).get("model_drift_detected", False))
+        if is_data_drift or is_model_drift:
+            sev = "critical" if is_model_drift else "warning"
+            send_alert_webhook(
+                title="Drift Detected on Student Performance Pipeline",
+                message=(
+                    f"Tag `{tag}` flagged covariate/model drift "
+                    f"(drift_share={drift_results.get('drift_share', 0.0):.1%}, "
+                    f"model_drift={is_model_drift})."
+                ),
+                severity=sev,
+                fields={
+                    "Drift Share": f"{drift_results.get('drift_share', 0.0):.1%}",
+                    "Drifted Features": f"{drift_results.get('drifted_features_count', 0)}/11",
+                    "Model Drift": str(is_model_drift),
+                },
+            )
+    except Exception:
+        pass
 
     return drift_results
 

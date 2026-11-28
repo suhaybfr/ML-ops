@@ -33,6 +33,10 @@ llama-index-vector-stores-chroma>=0.4.0
 llama-index-llms-google-genai>=0.11.0
 google-genai>=1.0.0
 
+# Cloud Persistence (Supabase Postgres + pgvector) & Azure Blob Artifacts
+psycopg[binary]>=3.2.0
+azure-storage-blob>=12.20.0
+
 # Testing & Linting
 pytest
 pytest-cov

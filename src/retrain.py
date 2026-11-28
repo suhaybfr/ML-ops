@@ -50,7 +50,7 @@ from src.features import ENGINEERED_FEATURES, TARGET_COL, select_xy  # noqa: E40
 from src.induce_drift import generate_synthetic_baseline  # noqa: E402
 from src.monitoring import run_full_monitoring  # noqa: E402
 from src.register_model import REGISTRY_MODEL_NAME, register_and_promote_champion  # noqa: E402
-from src.telemetry import get_live_buffer_path, load_live_interactions  # noqa: E402
+from src.telemetry import load_live_interactions  # noqa: E402
 from src.utils import (  # noqa: E402
     DEFAULT_EXPERIMENT,
     log_model_and_pkl,
@@ -68,6 +68,15 @@ DEFAULT_PROMOTED_PATH = REPO_ROOT / "models" / "retrained_champion.pkl"
 
 
 def _load_previous_status(status_path: Path) -> dict[str, Any]:
+    try:
+        from src.storage import get_storage, is_postgres_configured
+
+        if is_postgres_configured():
+            stored = get_storage().get_latest_retrain_run()
+            if stored:
+                return stored
+    except Exception:
+        pass
     if not status_path.exists():
         return {
             "retrain_runs_total": 0,
@@ -87,6 +96,13 @@ def _load_previous_status(status_path: Path) -> dict[str, Any]:
 def _write_status(status_path: Path, payload: dict[str, Any]) -> Path:
     status_path.parent.mkdir(parents=True, exist_ok=True)
     status_path.write_text(json.dumps(payload, indent=2, default=str) + "\n", encoding="utf-8")
+    try:
+        from src.storage import get_storage, is_postgres_configured
+
+        if is_postgres_configured():
+            get_storage().save_retrain_run(payload)
+    except Exception as exc:
+        print(f"[Retrain] Notice: Postgres retrain run save skipped ({exc})")
     return status_path
 
 
@@ -303,7 +319,7 @@ def retrain_cycle(
     prev_watermark = int(prev.get("watermark_rows", 0))
     total_live_rows = 0
     if from_live:
-        live_path = Path(cur_path) if cur_path else get_live_buffer_path()
+        live_path = Path(cur_path) if cur_path else None
         all_live_raw = load_live_interactions(buffer_path=live_path, labeled_only=False)
         total_live_rows = int(len(all_live_raw))
         window_start = prev_watermark if prev_watermark < total_live_rows else 0
@@ -595,6 +611,37 @@ def retrain_cycle(
         "reload_result": reload_result,
     }
     _write_status(status_file, status_payload)
+
+    # Milestone 5: Optional Discord / webhook paging on promotion or gate failure
+    try:
+        from src.alerts import send_alert_webhook
+
+        if status == "promoted":
+            send_alert_webhook(
+                title=f"Model Promoted: {active_version}",
+                message=(
+                    f"Candidate passed {gate['passed_checks']}/{gate['total_checks']} checks "
+                    f"(Test F1={new_f1:.4f}) and was promoted."
+                ),
+                severity="info",
+                fields={
+                    "Version": active_version,
+                    "Test F1": f"{new_f1:.4f}",
+                    "Quality Gate": f"{gate['passed_checks']}/{gate['total_checks']}",
+                },
+            )
+        elif status == "gate_failed":
+            send_alert_webhook(
+                title="Retrain Quality Gate Failed",
+                message=(
+                    f"Candidate failed quality gate "
+                    f"({gate['passed_checks']}/{gate['total_checks']}); Champion retained."
+                ),
+                severity="critical",
+                fields={"Test F1": f"{new_f1:.4f}"},
+            )
+    except Exception:
+        pass
 
     return {
         **status_payload,

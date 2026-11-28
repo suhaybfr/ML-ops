@@ -1,0 +1,40 @@
+// =============================================================================
+//  Grafana Alloy / Grafana Cloud Scrape Config for Azure Container Apps
+// =============================================================================
+//  Scrapes your live Azure Container Apps `/metrics` endpoint with Bearer auth
+//  and remote-writes all 27+ MLOps metrics to Grafana Cloud Prometheus.
+//
+//  Required env vars:
+//    ACA_FQDN                    e.g. student-performance-api.<env>.uaenorth.azurecontainerapps.io
+//    ADMIN_API_KEY               Bearer token matching your serving container's ADMIN_API_KEY
+//    GRAFANA_CLOUD_PROM_URL      e.g. https://prometheus-prod-XX.grafana.net/api/prom/push
+//    GRAFANA_CLOUD_PROM_USER     Numeric Grafana Cloud Prometheus instance ID
+//    GRAFANA_CLOUD_API_TOKEN     Grafana Cloud MetricsPublisher API token
+// =============================================================================
+
+prometheus.scrape "student_predictor_api" {
+  targets = [
+    { "__address__" = env("ACA_FQDN") },
+  ]
+  scheme          = "https"
+  metrics_path    = "/metrics"
+  scrape_interval = "15s"
+  scrape_timeout  = "10s"
+
+  authorization {
+    type        = "Bearer"
+    credentials = env("ADMIN_API_KEY")
+  }
+
+  forward_to = [prometheus.remote_write.grafana_cloud.receiver]
+}
+
+prometheus.remote_write "grafana_cloud" {
+  endpoint {
+    url = env("GRAFANA_CLOUD_PROM_URL")
+    basic_auth {
+      username = env("GRAFANA_CLOUD_PROM_USER")
+      password = env("GRAFANA_CLOUD_API_TOKEN")
+    }
+  }
+}

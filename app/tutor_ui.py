@@ -18,7 +18,11 @@ _ALLOWED_ASSETS = {
 
 @router.get("/", include_in_schema=False)
 def study_room():
-    return FileResponse(ASSETS / "index.html", media_type="text/html; charset=utf-8")
+    return FileResponse(
+        ASSETS / "index.html",
+        media_type="text/html; charset=utf-8",
+        headers={"Cache-Control": "no-cache"},
+    )
 
 
 @router.get("/assets/{name}", include_in_schema=False)
@@ -26,4 +30,8 @@ def tutor_asset(name: str):
     media_type = _ALLOWED_ASSETS.get(name)
     if media_type is None:
         raise HTTPException(status_code=404, detail="Asset not found.")
-    return FileResponse(ASSETS / name, media_type=media_type)
+    return FileResponse(
+        ASSETS / name,
+        media_type=media_type,
+        headers={"Cache-Control": "no-cache"},
+    )

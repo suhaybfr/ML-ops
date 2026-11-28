@@ -38,7 +38,7 @@ from typing import Any, Dict, List, Optional
 
 import chromadb
 from chromadb.config import Settings as ChromaSettings
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from llama_index.core import VectorStoreIndex
 from llama_index.core.base.embeddings.base import BaseEmbedding
 from llama_index.core.llms import ChatMessage, MessageRole
@@ -48,6 +48,7 @@ from llama_index.vector_stores.chroma import ChromaVectorStore
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 from starlette.concurrency import run_in_threadpool
 
+from app.pgvector_store import PgVectorTutorStore
 from app.tutor_library import (
     CHUNK_OVERLAP,
     CHUNK_SIZE,
@@ -56,6 +57,8 @@ from app.tutor_library import (
     PdfLibrary,
 )
 from app.tutor_ui import router as ui_router
+from src.security import enforce_tutor_ask_rate_limit, enforce_tutor_upload_rate_limit
+from src.storage import SupabaseObjectStorage, is_postgres_configured
 
 # ---------------------------------------------------------------------------
 # Prometheus metrics (optional — gracefully skipped if prometheus_client absent)
@@ -108,10 +111,29 @@ if _PROMETHEUS_AVAILABLE:
         "tutor_indexed_chunks_total",
         "Total indexed text chunks across curriculum and uploaded PDFs",
     )
+    TUTOR_TOKENS = _get_or_create_metric(
+        Counter,
+        "tutor_tokens_total",
+        "Total Gemini tokens consumed by /tutor/ask by token type",
+        ["token_type"],
+    )
+    TUTOR_RETRIEVAL_TOP_SIM = _get_or_create_metric(
+        Histogram,
+        "tutor_retrieval_top_similarity",
+        "Top retrieval cosine similarity score on /tutor/ask",
+        buckets=[0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0],
+    )
+    TUTOR_CHUNKS_FILTERED = _get_or_create_metric(
+        Counter,
+        "tutor_chunks_filtered_total",
+        "Total retrieved chunks dropped below TUTOR_MIN_SIMILARITY relevance floor",
+    )
     # Pre-initialize common label sets so PromQL rate() queries never return empty
     for _st in ("success", "error"):
         for _src in ("curriculum", "pdf"):
             TUTOR_REQUESTS.labels(status=_st, source_type=_src)
+    for _tok in ("prompt", "completion", "total"):
+        TUTOR_TOKENS.labels(token_type=_tok)
     for _err in (
         "missing_api_key",
         "vector_store",
@@ -150,6 +172,60 @@ def _collection_name() -> str:
 
 def _default_docs_dir() -> str:
     return os.environ.get("TUTOR_DOCS_DIR", "docs")
+
+
+def _min_similarity() -> float:
+    try:
+        return max(0.0, min(1.0, float(os.environ.get("TUTOR_MIN_SIMILARITY", "0.20").strip())))
+    except (ValueError, TypeError):
+        return 0.20
+
+
+def _extract_token_usage(
+    response: Any,
+    messages: List[ChatMessage],
+    answer: str,
+) -> Dict[str, int]:
+    """Read Gemini token counts from response metadata, with deterministic char/4 fallback."""
+    prompt_toks = 0
+    comp_toks = 0
+    total_toks = 0
+
+    raw = getattr(response, "raw", None)
+    usage = None
+    if isinstance(raw, dict):
+        usage = raw.get("usage_metadata") or raw.get("usage")
+    elif raw is not None:
+        usage = getattr(raw, "usage_metadata", None) or getattr(raw, "usage", None)
+
+    if isinstance(usage, dict):
+        prompt_toks = int(usage.get("prompt_token_count") or usage.get("prompt_tokens") or 0)
+        comp_toks = int(
+            usage.get("candidates_token_count") or usage.get("completion_tokens") or 0
+        )
+        total_toks = int(usage.get("total_token_count") or usage.get("total_tokens") or 0)
+    elif usage is not None:
+        prompt_toks = int(
+            getattr(usage, "prompt_token_count", 0) or getattr(usage, "prompt_tokens", 0) or 0
+        )
+        comp_toks = int(
+            getattr(usage, "candidates_token_count", 0)
+            or getattr(usage, "completion_tokens", 0)
+            or 0
+        )
+        total_toks = int(
+            getattr(usage, "total_token_count", 0) or getattr(usage, "total_tokens", 0) or 0
+        )
+
+    if prompt_toks <= 0:
+        prompt_chars = sum(len(str(m.content or "")) for m in messages)
+        prompt_toks = max(1, prompt_chars // 4)
+    if comp_toks <= 0:
+        comp_toks = max(1, len(answer) // 4)
+    if total_toks <= 0:
+        total_toks = prompt_toks + comp_toks
+
+    return {"prompt": prompt_toks, "completion": comp_toks, "total": total_toks}
 
 
 def _require_api_key() -> str:
@@ -460,7 +536,37 @@ class _TutorStore:
 
 
 _store: Optional[_TutorStore] = None
+_pg_store: Optional[PgVectorTutorStore] = None
+_pg_store_dsn: Optional[str] = None
 _store_lock = threading.Lock()
+
+
+def _use_pgvector() -> bool:
+    return is_postgres_configured()
+
+
+def _embed_texts(texts: List[str]) -> List[List[float]]:
+    if not texts:
+        return []
+    return _get_embed_model().get_text_embedding_batch(texts)
+
+
+def _get_pg_store() -> PgVectorTutorStore:
+    global _pg_store, _pg_store_dsn
+    dsn = os.environ.get("DATABASE_URL", "").strip()
+    if _pg_store is not None and _pg_store_dsn == dsn:
+        return _pg_store
+    with _store_lock:
+        if _pg_store is not None and _pg_store_dsn == dsn:
+            return _pg_store
+        store = PgVectorTutorStore(dsn=dsn, auto_init_schema=True)
+        col = _collection_name()
+        if store.count(col) == 0:
+            store.upsert_documents(col, _seed_documents(), _embed_texts)
+        _pg_store = store
+        _pg_store_dsn = dsn
+        refresh_tutor_metrics()
+        return _pg_store
 
 
 @lru_cache(maxsize=2)
@@ -484,10 +590,12 @@ def _library() -> PdfLibrary:
 
 
 def reset_store() -> None:
-    """Drop all cached Chroma/LlamaIndex/embedding handles (used by tests & reconfiguration)."""
-    global _store
+    """Drop all cached Chroma/pgvector/LlamaIndex/embedding handles."""
+    global _store, _pg_store, _pg_store_dsn
     with _store_lock:
         _store = None
+        _pg_store = None
+        _pg_store_dsn = None
     _client.cache_clear()
     if hasattr(_get_embed_model, "cache_clear"):
         _get_embed_model.cache_clear()
@@ -501,16 +609,23 @@ def refresh_tutor_metrics() -> dict[str, int]:
     pdf_chunks = 0
 
     try:
-        if _store is not None:
-            base_chunks = int(_store.collection.count())
-        if Path(_chroma_path()).exists():
-            pdf_docs, pdf_chunks = _library().stats()
-            if _store is None:
-                try:
-                    col = _client(_chroma_path()).get_collection(_collection_name())
-                    base_chunks = int(col.count())
-                except Exception:
-                    base_chunks = 0
+        if _use_pgvector():
+            store = _pg_store or PgVectorTutorStore(
+                dsn=os.environ.get("DATABASE_URL", "").strip(), auto_init_schema=False
+            )
+            base_chunks = store.count(_collection_name())
+            pdf_docs, pdf_chunks = store.pdf_stats(_collection_name())
+        else:
+            if _store is not None:
+                base_chunks = int(_store.collection.count())
+            if Path(_chroma_path()).exists():
+                pdf_docs, pdf_chunks = _library().stats()
+                if _store is None:
+                    try:
+                        col = _client(_chroma_path()).get_collection(_collection_name())
+                        base_chunks = int(col.count())
+                    except Exception:
+                        base_chunks = 0
     except Exception:
         pass
 
@@ -609,15 +724,21 @@ def index_directory(directory: str) -> Dict[str, Any]:
             status_code=400,
             detail=f"No {', '.join(SUPPORTED_DOC_EXTENSIONS)} files found in {directory}",
         )
-    store = _get_store()
-    chunks = _ingest(store, documents)
+    if _use_pgvector():
+        pg_store = _get_pg_store()
+        chunks = pg_store.upsert_documents(_collection_name(), documents, _embed_texts)
+        collection_size = pg_store.count(_collection_name())
+    else:
+        store = _get_store()
+        chunks = _ingest(store, documents)
+        collection_size = store.collection.count()
     refresh_tutor_metrics()
     return {
         "directory": str(target.relative_to(REPO_ROOT.resolve()) or "."),
         "documents_indexed": len(documents),
         "chunks_indexed": chunks,
         "collection": _collection_name(),
-        "collection_size": store.collection.count(),
+        "collection_size": collection_size,
         "files": [doc.metadata["source"] for doc in documents],
     }
 
@@ -678,6 +799,9 @@ class TutorAskResponse(BaseModel):
     answer: str
     sources: List[SourceSnippet]
     model_version: str
+    top_similarity: Optional[float] = None
+    chunks_filtered: int = 0
+    token_usage: Optional[Dict[str, int]] = None
 
 
 class TutorIndexRequest(BaseModel):
@@ -707,7 +831,10 @@ router.include_router(ui_router)
 @router.get("/documents", response_model=List[LibraryBook], summary="List uploaded course PDFs")
 def list_pdfs() -> List[LibraryBook]:
     try:
-        books = _library().books()
+        if _use_pgvector():
+            books = _get_pg_store().list_pdf_books(_collection_name())
+        else:
+            books = _library().books()
         refresh_tutor_metrics()
         return books
     except Exception as exc:
@@ -718,7 +845,12 @@ def list_pdfs() -> List[LibraryBook]:
         ) from exc
 
 
-@router.post("/documents", response_model=LibraryBook, summary="Upload and index a course PDF")
+@router.post(
+    "/documents",
+    response_model=LibraryBook,
+    summary="Upload and index a course PDF",
+    dependencies=[Depends(enforce_tutor_upload_rate_limit)],
+)
 async def upload_pdf(
     request: Request,
     filename: str = Query(min_length=1, max_length=240),
@@ -741,14 +873,61 @@ async def upload_pdf(
             raise HTTPException(413, "Choose a PDF smaller than or equal to 10 MiB.")
         data.extend(chunk)
 
+    def _do_upload() -> LibraryBook:
+        if _use_pgvector():
+            return _get_pg_store().upload_pdf(
+                namespace=_collection_name(),
+                filename=filename,
+                data=bytes(data),
+                embed_fn=_embed_texts,
+                object_storage=SupabaseObjectStorage.from_env(),
+            )
+        return _library().upload(filename, bytes(data))
+
     try:
-        book = await run_in_threadpool(lambda: _library().upload(filename, bytes(data)))
+        book = await run_in_threadpool(_do_upload)
         refresh_tutor_metrics()
         return book
     except HTTPException as exc:
         if exc.status_code >= 500 and _PROMETHEUS_AVAILABLE:
             TUTOR_ERRORS.labels(error_type="upload_error").inc()
         raise
+
+
+def clear_uploaded_pdfs() -> int:
+    """Remove all uploaded course PDFs (preserving the built-in seed curriculum)."""
+    if _use_pgvector():
+        removed = _get_pg_store().clear_all_pdfs(
+            _collection_name(), object_storage=SupabaseObjectStorage.from_env()
+        )
+    else:
+        removed = _library().clear_all()
+    refresh_tutor_metrics()
+    return removed
+
+
+@router.delete("/documents/{document_id}", summary="Delete an uploaded course PDF")
+def delete_pdf(document_id: str) -> Dict[str, Any]:
+    """Delete an uploaded PDF from the vector store and Supabase Storage."""
+    try:
+        if _use_pgvector():
+            deleted = _get_pg_store().delete_pdf(
+                _collection_name(),
+                document_id,
+                object_storage=SupabaseObjectStorage.from_env(),
+            )
+        else:
+            deleted = _library().delete(document_id)
+    except Exception as exc:
+        if _PROMETHEUS_AVAILABLE:
+            TUTOR_ERRORS.labels(error_type="vector_store").inc()
+        raise HTTPException(
+            status_code=500, detail=f"Failed to delete PDF: {type(exc).__name__}: {exc}"
+        ) from exc
+    if not deleted:
+        raise HTTPException(status_code=404, detail="PDF document not found.")
+    refresh_tutor_metrics()
+    return {"deleted": True, "document_id": document_id}
 
 
 def _build_messages(body: TutorAskRequest, snippets: List[SourceSnippet]) -> List[ChatMessage]:
@@ -779,7 +958,12 @@ def _build_messages(body: TutorAskRequest, snippets: List[SourceSnippet]) -> Lis
     return [*messages, ChatMessage(role=MessageRole.USER, content=user_prompt)]
 
 
-@router.post("/ask", response_model=TutorAskResponse, summary="Ask the digital literacy tutor")
+@router.post(
+    "/ask",
+    response_model=TutorAskResponse,
+    summary="Ask the digital literacy tutor",
+    dependencies=[Depends(enforce_tutor_ask_rate_limit)],
+)
 def ask_tutor(body: TutorAskRequest) -> TutorAskResponse:
     """Retrieve grounding chunks from ChromaDB and generate Socratic guidance with Gemini."""
     start = time.perf_counter()
@@ -794,11 +978,38 @@ def ask_tutor(body: TutorAskRequest) -> TutorAskResponse:
         raise
 
     try:
-        index = _library().index(body.document_id) if body.document_id else _get_store().index
         query = body.question
         if body.history:
             query = f"{body.question}\nPrevious question: {body.history[-1].question[:500]}"
-        retrieved = index.as_retriever(similarity_top_k=body.top_k).retrieve(query)
+        if _use_pgvector():
+            pg_store = _get_pg_store()
+            if body.document_id:
+                chunks = pg_store.query_pdf(
+                    _collection_name(), body.document_id, query, _embed_texts, top_k=body.top_k
+                )
+            else:
+                chunks = pg_store.query(_collection_name(), query, _embed_texts, top_k=body.top_k)
+            snippets = [
+                SourceSnippet(
+                    source=c.source,
+                    page=c.page,
+                    text=c.text[:MAX_SNIPPET_CHARS],
+                    score=c.score,
+                )
+                for c in chunks
+            ]
+        else:
+            index = _library().index(body.document_id) if body.document_id else _get_store().index
+            retrieved = index.as_retriever(similarity_top_k=body.top_k).retrieve(query)
+            snippets = [
+                SourceSnippet(
+                    source=str(item.node.metadata.get("source", "unknown")),
+                    page=item.node.metadata.get("page"),
+                    text=item.node.get_content()[:MAX_SNIPPET_CHARS],
+                    score=None if item.score is None else round(float(item.score), 4),
+                )
+                for item in retrieved
+            ]
     except HTTPException as exc:
         if _PROMETHEUS_AVAILABLE:
             TUTOR_REQUESTS.labels(status="error", source_type=source_type).inc()
@@ -814,18 +1025,27 @@ def ask_tutor(body: TutorAskRequest) -> TutorAskResponse:
             status_code=500, detail=f"Vector store retrieval failed: {type(exc).__name__}: {exc}"
         ) from exc
 
-    snippets = [
-        SourceSnippet(
-            source=str(item.node.metadata.get("source", "unknown")),
-            page=item.node.metadata.get("page"),
-            text=item.node.get_content()[:MAX_SNIPPET_CHARS],
-            score=None if item.score is None else round(float(item.score), 4),
-        )
-        for item in retrieved
-    ]
+    # Milestone 4: Observe top retrieval similarity & enforce minimum relevance floor
+    scored_vals = [s.score for s in snippets if s.score is not None]
+    top_sim: Optional[float] = round(max(scored_vals), 4) if scored_vals else None
+    if top_sim is not None and _PROMETHEUS_AVAILABLE:
+        TUTOR_RETRIEVAL_TOP_SIM.observe(max(0.0, min(1.0, top_sim)))
 
+    min_sim = _min_similarity()
+    kept_snippets: List[SourceSnippet] = []
+    filtered_count = 0
+    for s in snippets:
+        if s.score is not None and s.score < min_sim:
+            filtered_count += 1
+        else:
+            kept_snippets.append(s)
+    if filtered_count > 0 and _PROMETHEUS_AVAILABLE:
+        TUTOR_CHUNKS_FILTERED.inc(filtered_count)
+    snippets = kept_snippets
+
+    messages = _build_messages(body, snippets)
     try:
-        response = _get_llm(api_key).chat(_build_messages(body, snippets))
+        response = _get_llm(api_key).chat(messages)
     except Exception as exc:
         if _PROMETHEUS_AVAILABLE:
             TUTOR_REQUESTS.labels(status="error", source_type=source_type).inc()
@@ -841,14 +1061,21 @@ def ask_tutor(body: TutorAskRequest) -> TutorAskResponse:
             TUTOR_ERRORS.labels(error_type="empty_response").inc()
         raise HTTPException(status_code=500, detail="Gemini returned an empty response.")
 
+    usage = _extract_token_usage(response, messages, answer)
     if _PROMETHEUS_AVAILABLE:
         TUTOR_REQUESTS.labels(status="success", source_type=source_type).inc()
         TUTOR_LATENCY.observe(time.perf_counter() - start)
+        for tok_type, tok_val in usage.items():
+            if tok_val > 0:
+                TUTOR_TOKENS.labels(token_type=tok_type).inc(tok_val)
 
     return TutorAskResponse(
         answer=answer,
         sources=snippets,
         model_version=f"{TUTOR_VERSION}/{_gemini_model()}",
+        top_similarity=top_sim,
+        chunks_filtered=filtered_count,
+        token_usage=usage,
     )
 
 
