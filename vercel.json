@@ -1,0 +1,9 @@
+{
+  "buildCommand": "",
+  "outputDirectory": "app/static/tutor",
+  "rewrites": [
+    { "source": "/tutor/assets/(.*)", "destination": "/$1" },
+    { "source": "/tutor/(.*)", "destination": "/index.html" },
+    { "source": "/tutor", "destination": "/index.html" }
+  ]
+}

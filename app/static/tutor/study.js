@@ -54,11 +54,35 @@ for (const btn of document.querySelectorAll(".tab-btn")) {
 el("open-xai-btn").onclick = () => switchTab("explain");
 el("switch-lib-btn").onclick = () => switchTab("library");
 
+const DEFAULT_CLOUD_API_BASE =
+  "https://student-performance-api.redsmoke-91a14c63.uaenorth.azurecontainerapps.io";
+
+function resolveApiBase() {
+  if (typeof window === "undefined") return "";
+  if (window.MLOPS_API_BASE) return String(window.MLOPS_API_BASE).replace(/\/+$/, "");
+  const host = (window.location.hostname || "").toLowerCase();
+  const isLocal = host === "localhost" || host === "127.0.0.1" || host === "::1";
+  const isSameOriginBackend = isLocal || host.endsWith(".azurecontainerapps.io");
+  return isSameOriginBackend ? "" : DEFAULT_CLOUD_API_BASE;
+}
+
+const API_BASE = resolveApiBase();
+
 if (typeof window !== "undefined" && window.location.hostname) {
   const proto = window.location.protocol || "http:";
-  const host = window.location.hostname;
-  el("grafana-link").href = proto + "//" + host + ":3000/d/student-perf-mlops";
-  el("alerts-link").href = proto + "//" + host + ":9090/alerts";
+  const host = window.location.hostname.toLowerCase();
+  const isLocal = host === "localhost" || host === "127.0.0.1" || host === "::1";
+  if (isLocal) {
+    el("grafana-link").href = proto + "//" + host + ":3000/d/student-perf-mlops";
+    el("alerts-link").href = proto + "//" + host + ":9090/alerts";
+  } else {
+    el("grafana-link").hidden = true;
+    el("alerts-link").hidden = true;
+  }
+  const apiDocsLink = document.querySelector('a.meta-link[href="/docs"]');
+  if (apiDocsLink && API_BASE) {
+    apiDocsLink.href = API_BASE + "/docs";
+  }
 }
 
 async function apiFetch(url, options) {
@@ -67,7 +91,8 @@ async function apiFetch(url, options) {
   if (adminKey) {
     opts.headers = { ...(opts.headers || {}), "X-API-Key": adminKey };
   }
-  const response = await fetch(url, opts);
+  const fullUrl = url.startsWith("http://") || url.startsWith("https://") ? url : API_BASE + url;
+  const response = await fetch(fullUrl, opts);
   if (!response.ok) {
     const body = await response.json().catch(() => ({}));
     const msg = typeof body.detail === "string"

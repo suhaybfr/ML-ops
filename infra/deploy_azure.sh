@@ -38,7 +38,7 @@ ACA_JOB_ENV="${ACA_JOB_ENVIRONMENT:-mlops-jobs-env}"
 APP_NAME="${ACA_APP_NAME:-student-performance-api}"
 JOB_NAME="${ACA_JOB_NAME:-student-retrain-worker}"
 IMAGE="${ACA_IMAGE:-ghcr.io/suhaybfr/student-performance-predictor:latest}"
-MIN_REPLICAS="${ACA_MIN_REPLICAS:-1}"
+MIN_REPLICAS="${ACA_MIN_REPLICAS:-0}"
 MAX_REPLICAS="${ACA_MAX_REPLICAS:-2}"
 
 echo "[Azure] Resource Group : $RG ($LOC)"
