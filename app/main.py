@@ -33,7 +33,7 @@ from pydantic import BaseModel, ConfigDict, Field  # noqa: E402
 from sklearn.metrics import f1_score  # noqa: E402
 from sklearn.pipeline import Pipeline  # noqa: E402
 
-from src.alerts import get_alert_webhook_url, send_alert_webhook  # noqa: E402
+from src.alerts import is_alerts_configured, send_alert_webhook  # noqa: E402
 from src.artifact_store import ModelArtifactStore, is_azure_blob_configured  # noqa: E402
 from src.assessment import (  # noqa: E402
     build_socratic_intervention_prompt,
@@ -1397,7 +1397,7 @@ def health():
             "vector_backend": "pgvector" if pg_active else "chroma",
             "artifact_backend": "azure_blob" if is_azure_blob_configured() else "local",
             "admin_auth_enabled": bool(get_configured_admin_key()),
-            "alerts_configured": bool(get_alert_webhook_url()),
+            "alerts_configured": is_alerts_configured(),
             "shadow_active": _shadow_model is not None,
             "uptime_seconds": (
                 round(time.time() - _model_load_time, 1) if _model_load_time else None

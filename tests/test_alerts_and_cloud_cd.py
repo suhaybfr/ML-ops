@@ -18,9 +18,46 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 def test_alert_webhook_noop_when_unconfigured(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv("ALERT_WEBHOOK_URL", raising=False)
     monkeypatch.delenv("DISCORD_WEBHOOK_URL", raising=False)
+    monkeypatch.delenv("ALERT_EMAIL_TO", raising=False)
+    monkeypatch.delenv("SMTP_USER", raising=False)
+    monkeypatch.delenv("SMTP_PASSWORD", raising=False)
+    monkeypatch.delenv("ALERT_EMAIL_TO", raising=False)
+    monkeypatch.delenv("SMTP_USER", raising=False)
+    monkeypatch.delenv("SMTP_PASSWORD", raising=False)
     res = send_alert_webhook("Test", "No webhook set")
     assert res["sent"] is False
     assert res["reason"] == "no_webhook_configured"
+
+
+def test_alert_email_sends_via_smtp_ssl_and_works_without_webhook(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.delenv("ALERT_WEBHOOK_URL", raising=False)
+    monkeypatch.delenv("DISCORD_WEBHOOK_URL", raising=False)
+    monkeypatch.delenv("ALERT_EMAIL_TO", raising=False)
+    monkeypatch.delenv("SMTP_USER", raising=False)
+    monkeypatch.delenv("SMTP_PASSWORD", raising=False)
+    monkeypatch.setenv("ALERT_EMAIL_TO", "student@example.com")
+    monkeypatch.setenv("SMTP_USER", "sender@gmail.com")
+    monkeypatch.setenv("SMTP_PASSWORD", "app-pass-16chars")
+    monkeypatch.setenv("SMTP_HOST", "smtp.gmail.com")
+    monkeypatch.setenv("SMTP_PORT", "465")
+
+    fake_smtp = MagicMock()
+    smtp_cm = MagicMock()
+    smtp_cm.__enter__.return_value = fake_smtp
+    smtp_cls = MagicMock(return_value=smtp_cm)
+    monkeypatch.setattr("src.alerts.smtplib.SMTP_SSL", smtp_cls)
+
+    res = send_alert_webhook(
+        "Drift Detected",
+        "64% features drifted",
+        severity="critical",
+        fields={"Drift Share": "64%"},
+    )
+    assert res["sent"] is True
+    assert res["email_sent"] is True
+    smtp_cls.assert_called_once_with("smtp.gmail.com", 465, timeout=10)
+    fake_smtp.login.assert_called_once_with("sender@gmail.com", "app-pass-16chars")
+    fake_smtp.send_message.assert_called_once()
 
 
 def test_alert_webhook_formats_discord_and_generic_payloads(monkeypatch: pytest.MonkeyPatch):
@@ -64,6 +101,9 @@ def test_alerts_test_endpoint_respects_admin_key(tmp_path: Path, monkeypatch: py
     monkeypatch.setenv("DRIFT_REPORTS_DIR", str(tmp_path / "drift"))
     monkeypatch.delenv("ALERT_WEBHOOK_URL", raising=False)
     monkeypatch.delenv("DISCORD_WEBHOOK_URL", raising=False)
+    monkeypatch.delenv("ALERT_EMAIL_TO", raising=False)
+    monkeypatch.delenv("SMTP_USER", raising=False)
+    monkeypatch.delenv("SMTP_PASSWORD", raising=False)
     reset_storage()
 
     import app.main as main_mod

@@ -108,6 +108,10 @@ ENV_VARS=(
   "SUPABASE_STORAGE_BUCKET=${SUPABASE_PDF_BUCKET:-course-pdfs}"
   "AZURE_STORAGE_CONTAINER=${AZURE_STORAGE_CONTAINER:-models}"
   "MLFLOW_TRACKING_USERNAME=${MLFLOW_TRACKING_USERNAME:-}"
+  "SMTP_HOST=${SMTP_HOST:-smtp.gmail.com}"
+  "SMTP_PORT=${SMTP_PORT:-465}"
+  "SMTP_USER=${SMTP_USER:-}"
+  "ALERT_EMAIL_TO=${ALERT_EMAIL_TO:-}"
 )
 
 add_secret_env() {
@@ -127,6 +131,7 @@ add_secret_env "admin-api-key" "ADMIN_API_KEY" "${ADMIN_API_KEY:-}"
 add_secret_env "azure-storage-conn" "AZURE_STORAGE_CONNECTION_STRING" "${AZURE_STORAGE_CONNECTION_STRING:-}"
 add_secret_env "mlflow-password" "MLFLOW_TRACKING_PASSWORD" "${MLFLOW_TRACKING_PASSWORD:-}"
 add_secret_env "alert-webhook-url" "ALERT_WEBHOOK_URL" "${ALERT_WEBHOOK_URL:-${DISCORD_WEBHOOK_URL:-}}"
+add_secret_env "smtp-password" "SMTP_PASSWORD" "${SMTP_PASSWORD:-}"
 
 wait_for_app() {
   local state=""
