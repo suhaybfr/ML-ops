@@ -34,6 +34,7 @@ done < "$ENV_FILE"
 RG="${AZURE_RESOURCE_GROUP:-mlops-platform-rg}"
 LOC="${AZURE_LOCATION:-uaenorth}"
 ACA_ENV="${ACA_ENVIRONMENT:-mlops-aca-env}"
+ACA_JOB_ENV="${ACA_JOB_ENVIRONMENT:-mlops-jobs-env}"
 APP_NAME="${ACA_APP_NAME:-student-performance-api}"
 JOB_NAME="${ACA_JOB_NAME:-student-retrain-worker}"
 IMAGE="${ACA_IMAGE:-ghcr.io/suhaybfr/student-performance-predictor:latest}"
@@ -52,14 +53,50 @@ az provider register --namespace Microsoft.OperationalInsights --wait >/dev/null
 # 1. Ensure Resource Group exists
 az group create --name "$RG" --location "$LOC" -o none
 
-# 2. Ensure Container Apps Environment exists
+# 2. Ensure Container Apps Environments exist
 if ! az containerapp env show --name "$ACA_ENV" --resource-group "$RG" >/dev/null 2>&1; then
   echo "[Azure] Creating Container Apps Environment '$ACA_ENV'..."
   az containerapp env create \
     --name "$ACA_ENV" \
     --resource-group "$RG" \
     --location "$LOC" \
+    --environment-mode WorkloadProfiles \
+    --no-wait \
     -o none
+fi
+
+wait_for_env() {
+  local env_name="$1"
+  local state=""
+  for _ in {1..90}; do
+    state="$(az containerapp env show --name "$env_name" --resource-group "$RG" --query properties.provisioningState -o tsv 2>/dev/null || echo "Unknown")"
+    if [[ "$state" == "Succeeded" ]]; then
+      return 0
+    elif [[ "$state" == "Failed" || "$state" == "Canceled" ]]; then
+      echo "ERROR: Environment '$env_name' provisioning state: $state" >&2
+      return 1
+    fi
+    sleep 4
+  done
+}
+wait_for_env "$ACA_ENV"
+
+# Express environments don't support Container Apps Jobs; ensure a WorkloadProfiles env exists for jobs
+ACA_ENV_MODE="$(az containerapp env show --name "$ACA_ENV" --resource-group "$RG" --query properties.environmentMode -o tsv 2>/dev/null || echo "")"
+if [[ "$ACA_ENV_MODE" == "Express" ]]; then
+  if ! az containerapp env show --name "$ACA_JOB_ENV" --resource-group "$RG" >/dev/null 2>&1; then
+    echo "[Azure] Creating WorkloadProfiles Environment '$ACA_JOB_ENV' for scheduled retrain job..."
+    az containerapp env create \
+      --name "$ACA_JOB_ENV" \
+      --resource-group "$RG" \
+      --location "$LOC" \
+      --environment-mode WorkloadProfiles \
+      --no-wait \
+      -o none
+  fi
+  wait_for_env "$ACA_JOB_ENV"
+else
+  ACA_JOB_ENV="$ACA_ENV"
 fi
 
 # Build secrets & env vars dynamically (Azure Container Apps rejects empty-string secrets)
@@ -91,10 +128,40 @@ add_secret_env "azure-storage-conn" "AZURE_STORAGE_CONNECTION_STRING" "${AZURE_S
 add_secret_env "mlflow-password" "MLFLOW_TRACKING_PASSWORD" "${MLFLOW_TRACKING_PASSWORD:-}"
 add_secret_env "alert-webhook-url" "ALERT_WEBHOOK_URL" "${ALERT_WEBHOOK_URL:-${DISCORD_WEBHOOK_URL:-}}"
 
-# 3. Create or update serving Container App
+wait_for_app() {
+  local state=""
+  for _ in {1..60}; do
+    state="$(az containerapp show --name "$APP_NAME" --resource-group "$RG" --query properties.provisioningState -o tsv 2>/dev/null || echo "Unknown")"
+    if [[ "$state" == "Succeeded" ]]; then
+      return 0
+    elif [[ "$state" == "Failed" || "$state" == "Canceled" ]]; then
+      echo "ERROR: Container App '$APP_NAME' provisioning state: $state" >&2
+      return 1
+    fi
+    sleep 4
+  done
+}
+
+wait_for_job() {
+  local state=""
+  for _ in {1..60}; do
+    state="$(az containerapp job show --name "$JOB_NAME" --resource-group "$RG" --query properties.provisioningState -o tsv 2>/dev/null || echo "Unknown")"
+    if [[ "$state" == "Succeeded" ]]; then
+      return 0
+    elif [[ "$state" == "Failed" || "$state" == "Canceled" ]]; then
+      echo "ERROR: Container Apps Job '$JOB_NAME' provisioning state: $state" >&2
+      return 1
+    fi
+    sleep 4
+  done
+}
+
+# 3. Create or update serving Container App (using --no-wait to avoid CLI socket resets)
 if az containerapp show --name "$APP_NAME" --resource-group "$RG" >/dev/null 2>&1; then
   echo "[Azure] Updating existing Container App '$APP_NAME'..."
-  az containerapp secret set --name "$APP_NAME" --resource-group "$RG" --secrets "${SECRETS[@]}" -o none
+  wait_for_app
+  az containerapp secret set --name "$APP_NAME" --resource-group "$RG" --secrets "${SECRETS[@]}" -o none || wait_for_app
+  wait_for_app
   az containerapp update \
     --name "$APP_NAME" \
     --resource-group "$RG" \
@@ -102,7 +169,9 @@ if az containerapp show --name "$APP_NAME" --resource-group "$RG" >/dev/null 2>&
     --min-replicas "$MIN_REPLICAS" \
     --max-replicas "$MAX_REPLICAS" \
     --set-env-vars "${ENV_VARS[@]}" \
+    --no-wait \
     -o none
+  wait_for_app
 else
   echo "[Azure] Creating Container App '$APP_NAME'..."
   az containerapp create \
@@ -118,7 +187,9 @@ else
     --max-replicas "$MAX_REPLICAS" \
     --secrets "${SECRETS[@]}" \
     --env-vars "${ENV_VARS[@]}" \
+    --no-wait \
     -o none
+  wait_for_app
 fi
 
 FQDN="$(az containerapp show --name "$APP_NAME" --resource-group "$RG" --query properties.configuration.ingress.fqdn -o tsv)"
@@ -129,19 +200,23 @@ echo "[Azure] Live App URL: $APP_URL"
 JOB_ENV_VARS=("${ENV_VARS[@]}" "SERVING_API_URL=$APP_URL")
 if az containerapp job show --name "$JOB_NAME" --resource-group "$RG" >/dev/null 2>&1; then
   echo "[Azure] Updating scheduled Container Apps Job '$JOB_NAME'..."
-  az containerapp job secret set --name "$JOB_NAME" --resource-group "$RG" --secrets "${SECRETS[@]}" -o none
+  wait_for_job
+  az containerapp job secret set --name "$JOB_NAME" --resource-group "$RG" --secrets "${SECRETS[@]}" -o none || wait_for_job
+  wait_for_job
   az containerapp job update \
     --name "$JOB_NAME" \
     --resource-group "$RG" \
     --image "$IMAGE" \
     --set-env-vars "${JOB_ENV_VARS[@]}" \
+    --no-wait \
     -o none
+  wait_for_job
 else
   echo "[Azure] Creating scheduled Container Apps Job '$JOB_NAME' (every 6h)..."
   az containerapp job create \
     --name "$JOB_NAME" \
     --resource-group "$RG" \
-    --environment "$ACA_ENV" \
+    --environment "$ACA_JOB_ENV" \
     --trigger-type Schedule \
     --cron-expression "0 */6 * * *" \
     --replica-timeout 900 \
@@ -151,11 +226,20 @@ else
     --image "$IMAGE" \
     --cpu 1.0 \
     --memory 2.0Gi \
-    --command "python" "-m" "src.worker_retrain" "--from-live" "--shadow" "--api-url" "$APP_URL" \
+    --command "python" \
+    --args "src/worker_retrain.py" \
     --secrets "${SECRETS[@]}" \
     --env-vars "${JOB_ENV_VARS[@]}" \
+    --no-wait \
     -o none
+  wait_for_job
 fi
+
+# Ensure worker runs in --shadow mode via ARM PATCH (preserves redacted secrets & avoids az argparse)
+JOB_ID="$(az containerapp job show --name "$JOB_NAME" --resource-group "$RG" --query id -o tsv)"
+CONTAINER_JSON="$(az containerapp job show --name "$JOB_NAME" --resource-group "$RG" --query "properties.template.containers[0]" -o json | python3 -c 'import sys,json; c=json.load(sys.stdin); c.pop("imageType",None); c["args"]=["src/worker_retrain.py","--shadow"]; print(json.dumps({"properties":{"template":{"containers":[c]}}}))')"
+az rest --method PATCH --uri "https://management.azure.com${JOB_ID}?api-version=2024-03-01" --body "$CONTAINER_JSON" -o none || wait_for_job
+wait_for_job
 
 echo ""
 echo "[Azure] Smoke-checking ${APP_URL}/health ..."
