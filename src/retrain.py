@@ -526,16 +526,15 @@ def retrain_cycle(
                 else f"random_forest_retrained_r{promotions_total}"
             )
             # Exponential moving reference adaptation: blend newly learned cohort (88%)
-            # with prior reference anchor (12%) so future batches from this adapted
-            # cohort show markedly lower KS drift (<30% OK) instead of re-alerting.
-            n_ref_total = min(max(len(ref_sample), 1200), 2500)
+            # with prior reference anchor (12%) without oversampling small cohorts with
+            # replacement (which artificially inflates statistical test power in Evidently).
             eval_cols = [c for c in ref_sample.columns if c in cur_all_df.columns]
             adapt_source = cur_labeled_df if len(cur_labeled_df) >= 5 else cur_all_df
             if len(adapt_source) >= 5 and len(eval_cols) >= len(ENGINEERED_FEATURES):
-                n_cohort = int(round(n_ref_total * 0.88))
-                n_anchor = max(1, n_ref_total - n_cohort)
+                n_cohort = min(len(adapt_source), int(round(2500 * 0.88)))
+                n_anchor = max(1, int(round(n_cohort * 0.12 / 0.88)))
                 cohort_part = adapt_source[eval_cols].sample(
-                    n=n_cohort, replace=True, random_state=42 + promotions_total
+                    n=n_cohort, replace=False, random_state=42 + promotions_total
                 )
                 anchor_part = ref_sample[eval_cols].sample(
                     n=n_anchor, replace=len(ref_sample) < n_anchor, random_state=42
