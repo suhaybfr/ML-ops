@@ -322,19 +322,27 @@ def test_pgvector_store_upsert_query_and_hard_500_on_failure(monkeypatch: pytest
 
 def test_run_full_monitoring_handles_nan_targets_without_crashing(tmp_path: Path):
     """Unlabeled rows (NaN correct) mixed into reference/current must never crash retrain."""
+    import joblib
     import numpy as np
+    from sklearn.dummy import DummyClassifier
     from src.induce_drift import generate_synthetic_baseline
     from src.monitoring import run_full_monitoring
 
     ref = generate_synthetic_baseline(n_rows=40, seed=1)
     cur = generate_synthetic_baseline(n_rows=20, seed=2)
+    dummy = DummyClassifier(strategy="most_frequent").fit(
+        ref[list(ENGINEERED_FEATURES)].astype(float), ref["correct"].astype(int)
+    )
+    model_pkl = tmp_path / "dummy_model.pkl"
+    joblib.dump(dummy, model_pkl)
+
     ref.loc[:10, "correct"] = np.nan
     cur.loc[:5, "correct"] = np.nan
 
     res = run_full_monitoring(
         reference_df=ref,
         current_df=cur,
-        model_path=str(Path("models/baseline_model.pkl")),
+        model_path=str(model_pkl),
         output_dir=str(tmp_path),
         tag="nan_target_safety",
         log_to_mlflow=False,

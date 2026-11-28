@@ -152,16 +152,27 @@ def test_shadow_challenger_scoring_metrics_and_blue_green_promotion(
     monkeypatch.setenv("DRIFT_REPORTS_DIR", str(tmp_path / "drift"))
     reset_storage()
 
+    import numpy as np
     import app.main as main_mod
 
-    # Create a deterministic DummyClassifier shadow model that always predicts 0 (disagrees with mastery)
-    dummy = DummyClassifier(strategy="constant", constant=0)
-    import numpy as np
+    # Ensure a Champion model is loaded even in Job 1 before `dvc pull`
+    champ_tmp = tmp_path / "champ_const1.pkl"
+    if not Path(main_mod.DEFAULT_MODEL_PATH).exists():
+        champ_dummy = DummyClassifier(strategy="constant", constant=1)
+        champ_dummy.fit(np.zeros((2, 11)), [0, 1])
+        joblib.dump(champ_dummy, champ_tmp)
+        monkeypatch.setattr(main_mod, "MODEL_PATH", str(champ_tmp))
+        main_mod.reset_model_cache()
 
+    # Create a deterministic DummyClassifier shadow model that always predicts 0 (disagrees with 1)
+    dummy = DummyClassifier(strategy="constant", constant=0)
     dummy.fit(np.zeros((2, 11)), [0, 1])
-    chall_path = main_mod.REPO_ROOT / "models" / "challenger_test_shadow.pkl"
+    models_dir = main_mod.REPO_ROOT / "models"
+    models_dir.mkdir(parents=True, exist_ok=True)
+    chall_path = models_dir / "challenger_test_shadow.pkl"
     joblib.dump(dummy, chall_path)
-    baseline_bytes_before = (main_mod.REPO_ROOT / "models" / "baseline_model.pkl").read_bytes()
+    baseline_pkl = models_dir / "baseline_model.pkl"
+    baseline_bytes_before = baseline_pkl.read_bytes() if baseline_pkl.exists() else None
 
     try:
         client = TestClient(main_mod.app)
@@ -215,10 +226,9 @@ def test_shadow_challenger_scoring_metrics_and_blue_green_promotion(
         assert clr.status_code == 200
         assert clr.json()["active"] is False
 
-        # Verify baseline_model.pkl was NEVER modified
-        assert (main_mod.REPO_ROOT / "models" / "baseline_model.pkl").read_bytes() == (
-            baseline_bytes_before
-        )
+        # Verify baseline_model.pkl was NEVER modified (when materialized)
+        if baseline_bytes_before is not None:
+            assert baseline_pkl.read_bytes() == baseline_bytes_before
     finally:
         if chall_path.exists():
             chall_path.unlink()
@@ -234,8 +244,15 @@ def test_async_retrain_job_returns_immediately_and_completes(
     monkeypatch.setenv("DRIFT_REPORTS_DIR", str(tmp_path / "drift"))
     reset_storage()
 
+    import numpy as np
     import app.main as main_mod
     import src.worker_retrain as worker_mod
+
+    models_dir = main_mod.REPO_ROOT / "models"
+    models_dir.mkdir(parents=True, exist_ok=True)
+    async_cand_pkl = models_dir / "challenger_async_test.pkl"
+    dummy = DummyClassifier(strategy="constant", constant=1).fit(np.zeros((2, 11)), [0, 1])
+    joblib.dump(dummy, async_cand_pkl)
 
     # Patch retrain_cycle inside worker_retrain so the async job completes fast & deterministically
     monkeypatch.setattr(
@@ -248,31 +265,34 @@ def test_async_retrain_job_returns_immediately_and_completes(
             "quality_gate_passed": True,
             "candidate_f1": 0.965,
             "active_model_version": "rf_async_v99",
-            "active_artifact_path": str(main_mod.REPO_ROOT / "models" / "baseline_model.pkl"),
+            "active_artifact_path": str(async_cand_pkl),
         },
     )
 
-    client = TestClient(main_mod.app)
-    resp = client.post(
-        "/model/retrain",
-        json={"async_mode": True, "deploy_as_shadow": True, "force": True},
-    )
-    assert resp.status_code == 200
-    job = resp.json()
-    assert job["job_id"].startswith("retrain_")
-    assert job["status"] in {"queued", "running", "completed"}
+    try:
+        client = TestClient(main_mod.app)
+        resp = client.post(
+            "/model/retrain",
+            json={"async_mode": True, "deploy_as_shadow": True, "force": True},
+        )
+        assert resp.status_code == 200
+        job = resp.json()
+        assert job["job_id"].startswith("retrain_")
+        assert job["status"] in {"queued", "running", "completed"}
 
-    # Poll until completed (should take <1s with mocked retrain_cycle)
-    final = job
-    for _ in range(40):
-        final = client.get(f"/model/retrain/jobs/{job['job_id']}").json()
-        if final["status"] in {"completed", "failed"}:
-            break
-        time.sleep(0.05)
+        # Poll until completed (should take <1s with mocked retrain_cycle)
+        final = job
+        for _ in range(40):
+            final = client.get(f"/model/retrain/jobs/{job['job_id']}").json()
+            if final["status"] in {"completed", "failed"}:
+                break
+            time.sleep(0.05)
 
-    assert final["status"] == "completed"
-    assert final["result"]["active_model_version"] == "rf_async_v99"
-    assert client.get("/model/shadow/status").json()["active"] is True
-
-    main_mod.clear_shadow_model()
-    reset_storage()
+        assert final["status"] == "completed"
+        assert final["result"]["active_model_version"] == "rf_async_v99"
+        assert client.get("/model/shadow/status").json()["active"] is True
+    finally:
+        if async_cand_pkl.exists():
+            async_cand_pkl.unlink()
+        main_mod.clear_shadow_model()
+        reset_storage()
